@@ -20,7 +20,9 @@ android/app/debug/
 *.aar
 
 # Signing material - NEVER commit these.
-# A leaked upload key lets somebody else publish updates as you.
+# A leaked upload key lets somebody else publish updates as you, and losing it
+# means every existing install has to be uninstalled before it can update.
+.signing/
 *.keystore
 *.jks
 keystore.properties
