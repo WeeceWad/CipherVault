@@ -4,21 +4,39 @@ A zero-knowledge password manager in three parts that share one vault:
 
 | Folder | What it is | How you run it |
 | --- | --- | --- |
-| `CipherVault/` | The web app | Open `index.html`, or `node _devserver.js web` |
+| `CipherVault/` | The web app | `start-web.bat`, or `node _devserver.js web` |
 | `CipherVault-Desktop/` | The same app wrapped in Electron | `cd CipherVault-Desktop && npm start` |
 | `CipherVault-Extension/` | Firefox/Chrome popup + autofill | Load as a temporary add-on (below) |
+| `CipherVault-Android/` | Capacitor app, self-updating from GitHub | See [README-ANDROID.md](README-ANDROID.md) |
 
-`CipherVault-Desktop/` is a copy of `CipherVault/` plus `main.js` and locally
-bundled Firebase SDKs. **`CipherVault/js/app.js` is the source of truth** —
-after editing it, copy it across:
+## One source of truth
+
+**`CipherVault/js/app.js` is the source of truth for everything
+security-relevant.** The other platforms get generated copies, because a vault
+encrypted on one device has to decrypt on another byte for byte.
+
+```bash
+cd CipherVault-Android
+npm run sync:core        # regenerates the Android and extension copies
+node scripts/check-parity.js   # asserts every platform derives keys identically
+```
+
+That produces:
+
+- `CipherVault-Android/www/js/core.js` — the whole engine layer
+- `CipherVault-Extension/js/crypto.js` — crypto only
+
+`CipherVault-Desktop/` is still a manual copy of `CipherVault/` plus `main.js`
+and locally bundled Firebase SDKs:
 
 ```bash
 cp CipherVault/js/app.js CipherVault-Desktop/js/app.js
 ```
 
-`CipherVault-Extension/js/crypto.js` is generated from the same file and must
-stay byte-for-byte compatible, or the extension will not be able to unlock a
-vault the app created.
+CI runs `sync-core.js --check` and `check-parity.js` on every push and fails
+the build if anything has drifted. That check exists because the failure it
+prevents is silent: a mismatched iteration count doesn't throw, it just means
+your phone can never open your vault again.
 
 ---
 
@@ -121,7 +139,14 @@ npm test
 This boots the real Electron window and drives the real UI: account creation,
 master password rules, add/lock/unlock round-trip, wrong-password rejection,
 per-account isolation, legacy vault migration, auto-lock, trash filtering.
-47 checks.
+52 checks.
+
+Cross-platform key derivation:
+
+```bash
+cd CipherVault-Android
+node scripts/check-parity.js
+```
 
 ## 7. Security notes
 
