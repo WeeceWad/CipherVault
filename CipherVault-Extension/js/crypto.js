@@ -1,9 +1,12 @@
 /**
- * CipherVault Cryptographic Core Engine.
+ * CipherVault Cryptographic Core Engine (browser extension)
  *
- * GENERATED FROM CipherVault/js/app.js - keep the two in sync. The extension
- * must derive keys exactly the way the desktop/web app does, or unlocking a
- * synced vault here will fail.
+ * GENERATED FILE - DO NOT EDIT.
+ * Source: CipherVault/js/app.js
+ * Regenerate: cd CipherVault-Android && npm run sync:core
+ *
+ * Editing this by hand will be silently overwritten, and any drift from the
+ * source means a vault encrypted on one device cannot be opened on another.
  */
 
 // --- CRYPTOGRAPHIC ENGINE (WebCrypto AES-256-GCM & PBKDF2 & TOTP) ---

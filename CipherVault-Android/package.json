@@ -1,0 +1,24 @@
+{
+  "name": "ciphervault-android",
+  "version": "1.0.0",
+  "private": true,
+  "description": "CipherVault for Android",
+  "scripts": {
+    "sync:core": "node scripts/sync-core.js",
+    "sync": "npm run sync:core && cap sync android",
+    "open": "cap open android",
+    "build:debug": "npm run sync && cd android && gradlew.bat assembleDebug",
+    "build:release": "npm run sync && cd android && gradlew.bat assembleRelease"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.4.2",
+    "@capacitor/app": "^8.0.0",
+    "@capacitor/clipboard": "^8.0.0",
+    "@capacitor/core": "^8.4.2",
+    "@capacitor/haptics": "^8.0.0",
+    "@capacitor/status-bar": "^8.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.4.2"
+  }
+}

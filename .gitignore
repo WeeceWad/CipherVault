@@ -49,3 +49,13 @@ yarn-error.log*
 # Local scratch
 tmp/
 temp/
+
+# Capacitor / Android generated native project artifacts
+CipherVault-Android/android/local.properties
+CipherVault-Android/android/.gradle/
+CipherVault-Android/android/app/src/main/assets/public/
+CipherVault-Android/android/app/src/main/assets/capacitor.config.json
+CipherVault-Android/android/app/src/main/assets/capacitor.plugins.json
+CipherVault-Android/android/capacitor-cordova-android-plugins/
+# NOTE: CipherVault-Android/www/lib/ (the vendored Firebase SDKs) IS committed
+# on purpose - CI cannot fetch it, and the app must not load scripts from a CDN.

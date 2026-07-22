@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Mirrors the CSS custom properties in www/css/mobile.css. -->
+    <color name="cvBackground">#0B0C10</color>
+    <color name="cvSurface">#11131B</color>
+    <color name="cvText">#F8FAFC</color>
+</resources>

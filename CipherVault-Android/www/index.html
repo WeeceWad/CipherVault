@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0B0C10">
+  <title>CipherVault</title>
+  <link rel="stylesheet" href="css/mobile.css">
+</head>
+<body>
+
+  <!-- ============ TOASTS ============ -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- ============ LOCK / ONBOARDING ============ -->
+  <div id="lock-screen" class="lock-screen">
+    <div class="lock-inner">
+      <div class="lock-brand">
+        <div class="shield-badge">
+          <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-5.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"/></svg>
+        </div>
+        <h1 id="lock-title">CipherVault</h1>
+        <p id="lock-subtitle">Your secure, zero-knowledge vault.</p>
+      </div>
+
+      <!-- Welcome -->
+      <div id="welcome-pane" class="lock-pane hidden">
+        <button type="button" id="btn-welcome-login" class="btn btn-primary btn-block">Log In / Create Account</button>
+        <button type="button" id="btn-welcome-local" class="btn btn-ghost btn-block">Use This Device Only</button>
+        <p class="lock-hint">Cloud sync keeps your vault the same on your phone, desktop and browser. Local only never leaves this phone.</p>
+      </div>
+
+      <!-- Sign in -->
+      <form id="signin-pane" class="lock-pane hidden">
+        <div class="field">
+          <label for="fb-email">Email</label>
+          <input type="email" id="fb-email" placeholder="you@example.com" autocomplete="username" inputmode="email">
+        </div>
+        <div class="field">
+          <label for="fb-password">Account Password</label>
+          <input type="password" id="fb-password" placeholder="Your account password" autocomplete="current-password">
+        </div>
+        <div id="signin-error" class="msg msg-error hidden"></div>
+        <div id="signin-success" class="msg msg-ok hidden"></div>
+        <button type="submit" id="btn-signin" class="btn btn-primary btn-block">Log In</button>
+        <button type="button" id="btn-signup" class="btn btn-ghost btn-block">Create Account</button>
+        <div class="lock-links">
+          <button type="button" id="btn-forgot" class="btn-link">Forgot account password?</button>
+          <button type="button" id="btn-signin-back" class="btn-link">Back</button>
+        </div>
+        <p class="lock-hint">This is your <strong>account</strong> password, not your master password.</p>
+      </form>
+
+      <!-- Create master password -->
+      <form id="setup-pane" class="lock-pane hidden">
+        <div class="field">
+          <label for="create-pass">New Master Password</label>
+          <div class="input-row">
+            <input type="password" id="create-pass" placeholder="At least 8 characters" autocomplete="new-password">
+            <button type="button" class="btn-eye" id="btn-eye-create" aria-label="Show password">
+              <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+            </button>
+          </div>
+          <div class="strength-track"><div id="setup-strength-bar" class="strength-fill"></div></div>
+          <span id="setup-strength-text" class="strength-label">Password Strength: None</span>
+        </div>
+        <div class="field">
+          <label for="confirm-pass">Confirm Master Password</label>
+          <input type="password" id="confirm-pass" placeholder="Re-enter it" autocomplete="new-password">
+        </div>
+        <div class="warn-box">
+          <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+          <span>Your master password is never stored or sent anywhere. If you lose it, your vault cannot be recovered.</span>
+        </div>
+        <div id="setup-error" class="msg msg-error hidden"></div>
+        <button type="submit" id="btn-create-vault" class="btn btn-primary btn-block">Create Vault</button>
+        <div class="lock-links"><button type="button" id="btn-setup-back" class="btn-link">Back</button></div>
+      </form>
+
+      <!-- Unlock -->
+      <form id="unlock-pane" class="lock-pane hidden">
+        <div class="field">
+          <label for="master-pass">Master Password</label>
+          <div class="input-row">
+            <input type="password" id="master-pass" placeholder="Enter master password" autocomplete="current-password">
+            <button type="button" class="btn-eye" id="btn-eye-unlock" aria-label="Show password">
+              <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+            </button>
+          </div>
+        </div>
+        <div id="unlock-error" class="msg msg-error hidden"></div>
+        <button type="submit" id="btn-unlock" class="btn btn-primary btn-block">Unlock</button>
+        <div class="lock-links">
+          <button type="button" id="btn-switch-account" class="btn-link">Switch account</button>
+          <button type="button" id="btn-reset-vault" class="btn-link danger">Reset vault</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ============ MAIN APP ============ -->
+  <div id="app-shell" class="app-shell hidden">
+
+    <header class="app-bar">
+      <h1 id="app-bar-title">Vault</h1>
+      <div class="app-bar-actions">
+        <span id="sync-pill" class="sync-pill"><i id="sync-dot"></i><span id="sync-text">Local</span></span>
+        <button class="icon-btn" id="btn-lock-now" title="Lock vault" aria-label="Lock vault">
+          <svg viewBox="0 0 24 24"><path fill="currentColor" d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM9 6c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9V6zm9 14H6V10h12v10zm-6-3c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2z"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- ---------- TAB: VAULT ---------- -->
+    <main id="tab-vault" class="tab-panel">
+      <div class="search-bar">
+        <svg viewBox="0 0 24 24" class="search-icon"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+        <input type="text" id="vault-search" placeholder="Search your vault" autocomplete="off" enterkeyhint="search">
+        <button class="clear-search hidden" id="btn-clear-search" aria-label="Clear search">
+          <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </div>
+
+      <div class="chip-row" id="category-chips">
+        <button class="chip active" data-category="all">All <span class="chip-count" id="c-all">0</span></button>
+        <button class="chip" data-category="favorites">Favourites <span class="chip-count" id="c-fav">0</span></button>
+        <button class="chip" data-category="passwords">Logins <span class="chip-count" id="c-pw">0</span></button>
+        <button class="chip" data-category="passkeys">Passkeys <span class="chip-count" id="c-pk">0</span></button>
+        <button class="chip" data-category="notes">Notes <span class="chip-count" id="c-notes">0</span></button>
+        <button class="chip" data-category="cards">Cards <span class="chip-count" id="c-cards">0</span></button>
+        <button class="chip" data-category="identity">Identity <span class="chip-count" id="c-id">0</span></button>
+        <button class="chip" data-category="trash">Trash <span class="chip-count" id="c-trash">0</span></button>
+      </div>
+
+      <div class="scroll-area" id="vault-list"></div>
+
+      <button class="fab" id="btn-add-item" aria-label="Add item">
+        <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+      </button>
+    </main>
+
+    <!-- ---------- TAB: TOOLS ---------- -->
+    <main id="tab-tools" class="tab-panel hidden">
+      <div class="scroll-area">
+        <div class="tool-grid">
+          <button class="tool-card" data-tool="generator">
+            <div class="tool-icon"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M12.65 10C11.83 7.67 9.61 6 7 6c-3.31 0-6 2.69-6 6s2.69 6 6 6c2.61 0 4.83-1.67 5.65-4H17v4h4v-4h2v-4H12.65zM7 14c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg></div>
+            <div class="tool-meta"><span class="tool-name">Password Generator</span><span class="tool-desc">Create strong random passwords</span></div>
+            <svg viewBox="0 0 24 24" class="chevron"><path fill="currentColor" d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+          </button>
+
+          <button class="tool-card" data-tool="masking">
+            <div class="tool-icon"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg></div>
+            <div class="tool-meta"><span class="tool-name">Email Masking</span><span class="tool-desc">SimpleLogin throwaway aliases</span></div>
+            <svg viewBox="0 0 24 24" class="chevron"><path fill="currentColor" d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+          </button>
+
+          <button class="tool-card" data-tool="health">
+            <div class="tool-icon"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.09-4-4L2 15.66z"/></svg></div>
+            <div class="tool-meta"><span class="tool-name">Password Health</span><span class="tool-desc">Find weak and reused passwords</span></div>
+            <svg viewBox="0 0 24 24" class="chevron"><path fill="currentColor" d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+          </button>
+
+          <button class="tool-card" data-tool="breach">
+            <div class="tool-icon"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"/></svg></div>
+            <div class="tool-meta"><span class="tool-name">Breach Scanner</span><span class="tool-desc">Check passwords against HaveIBeenPwned</span></div>
+            <svg viewBox="0 0 24 24" class="chevron"><path fill="currentColor" d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+          </button>
+        </div>
+      </div>
+    </main>
+
+    <!-- ---------- TAB: SETTINGS ---------- -->
+    <main id="tab-settings" class="tab-panel hidden">
+      <div class="scroll-area">
+
+        <section class="settings-group">
+          <h2>Account</h2>
+          <div class="settings-card">
+            <div class="row">
+              <div class="row-meta"><span class="row-title">Signed in as</span><span class="row-desc" id="set-account-email">Not signed in</span></div>
+            </div>
+            <button class="row row-tap" id="set-btn-account">
+              <div class="row-meta"><span class="row-title" id="set-account-action">Sign In</span><span class="row-desc">Sync your vault across devices</span></div>
+              <svg viewBox="0 0 24 24" class="chevron"><path fill="currentColor" d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+            </button>
+          </div>
+        </section>
+
+        <section class="settings-group">
+          <h2>Updates</h2>
+          <div class="settings-card">
+            <div class="row">
+              <div class="row-meta"><span class="row-title">Installed version</span><span class="row-desc" id="set-app-version">—</span></div>
+            </div>
+            <button class="row row-tap" id="set-btn-check-updates">
+              <div class="row-meta"><span class="row-title">Check for Updates</span><span class="row-desc" id="set-update-status">Tap to check GitHub for a newer release</span></div>
+              <svg viewBox="0 0 24 24" class="chevron"><path fill="currentColor" d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+            </button>
+            <label class="row">
+              <div class="row-meta"><span class="row-title">Check automatically</span><span class="row-desc">Look for updates when the app starts</span></div>
+              <input type="checkbox" id="set-auto-update" class="switch" checked>
+            </label>
+          </div>
+        </section>
+
+        <section class="settings-group">
+          <h2>Security</h2>
+          <div class="settings-card">
+            <label class="row">
+              <div class="row-meta"><span class="row-title">Auto-lock after</span><span class="row-desc">Forget the key when the app is idle</span></div>
+              <select id="set-auto-lock" class="select">
+                <option value="1">1 min</option>
+                <option value="5">5 min</option>
+                <option value="15" selected>15 min</option>
+                <option value="60">1 hour</option>
+                <option value="never">Never</option>
+              </select>
+            </label>
+            <label class="row">
+              <div class="row-meta"><span class="row-title">Lock when backgrounded</span><span class="row-desc">Lock as soon as you leave the app</span></div>
+              <input type="checkbox" id="set-lock-on-background" class="switch">
+            </label>
+            <label class="row">
+              <div class="row-meta"><span class="row-title">Clear clipboard after</span><span class="row-desc">Wipe copied passwords automatically</span></div>
+              <select id="set-clipboard" class="select">
+                <option value="10">10 sec</option>
+                <option value="30" selected>30 sec</option>
+                <option value="60">60 sec</option>
+                <option value="never">Never</option>
+              </select>
+            </label>
+          </div>
+        </section>
+
+        <section class="settings-group">
+          <h2>Integrations</h2>
+          <div class="settings-card">
+            <div class="row row-stack">
+              <div class="row-meta"><span class="row-title">SimpleLogin API Key</span><span class="row-desc">Needed for email masking</span></div>
+              <div class="input-row">
+                <input type="password" id="set-sl-key" placeholder="API key" autocomplete="off">
+                <button class="btn btn-small" id="set-btn-save-sl">Save</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-group">
+          <h2>Danger Zone</h2>
+          <div class="settings-card danger-card">
+            <button class="row row-tap" id="set-btn-destroy">
+              <div class="row-meta"><span class="row-title danger">Delete Vault Data</span><span class="row-desc">Permanently destroy every stored secret</span></div>
+              <svg viewBox="0 0 24 24" class="chevron"><path fill="currentColor" d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+            </button>
+          </div>
+        </section>
+
+        <p class="about-line">CipherVault · zero-knowledge · <span id="about-build">v1.0.0</span></p>
+      </div>
+    </main>
+
+    <!-- ---------- BOTTOM NAV ---------- -->
+    <nav class="bottom-nav">
+      <button class="nav-tab active" data-tab="vault">
+        <svg viewBox="0 0 24 24"><path fill="currentColor" d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM9 6c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9V6zm3 11c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg>
+        <span>Vault</span>
+      </button>
+      <button class="nav-tab" data-tab="tools">
+        <svg viewBox="0 0 24 24"><path fill="currentColor" d="M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.4 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.5-.4.5-1.1.1-1.4z"/></svg>
+        <span>Tools</span>
+      </button>
+      <button class="nav-tab" data-tab="settings">
+        <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.49-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+        <span>Settings</span>
+      </button>
+    </nav>
+  </div>
+
+  <!-- ============ FULL-SCREEN SHEET (detail / editor / tools) ============ -->
+  <div id="sheet" class="sheet hidden">
+    <header class="app-bar sheet-bar">
+      <button class="icon-btn" id="sheet-back" aria-label="Back">
+        <svg viewBox="0 0 24 24"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+      </button>
+      <h1 id="sheet-title">Detail</h1>
+      <div class="app-bar-actions" id="sheet-actions"></div>
+    </header>
+    <div class="scroll-area" id="sheet-body"></div>
+    <div class="sheet-footer hidden" id="sheet-footer"></div>
+  </div>
+
+  <!-- ============ MODAL DIALOG (updates, confirms) ============ -->
+  <div id="dialog-backdrop" class="dialog-backdrop hidden">
+    <div class="dialog" role="dialog" aria-modal="true">
+      <div class="dialog-icon" id="dialog-icon"></div>
+      <h2 id="dialog-title">Title</h2>
+      <div id="dialog-body" class="dialog-body"></div>
+      <div id="dialog-progress" class="progress-track hidden"><div id="dialog-progress-bar" class="progress-fill"></div></div>
+      <div class="dialog-actions" id="dialog-actions"></div>
+    </div>
+  </div>
+
+  <script src="lib/firebase-app-compat.js"></script>
+  <script src="lib/firebase-auth-compat.js"></script>
+  <script src="lib/firebase-firestore-compat.js"></script>
+  <script src="js/build.js"></script>
+  <script src="js/core.js"></script>
+  <script src="js/updater.js"></script>
+  <script src="js/mobile.js"></script>
+</body>
+</html>

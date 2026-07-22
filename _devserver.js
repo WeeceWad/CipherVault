@@ -14,6 +14,7 @@ const path = require('path');
 const TARGETS = {
   web: { dir: 'CipherVault', port: 5173, index: 'index.html' },
   extension: { dir: 'CipherVault-Extension', port: 5174, index: 'popup.html' },
+  android: { dir: 'CipherVault-Android/www', port: 5175, index: 'index.html' },
 };
 
 const target = TARGETS[process.argv[2] || 'web'];
