@@ -1,0 +1,51 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+out/
+*.asar
+
+# Android build output
+.gradle/
+android/build/
+android/app/build/
+android/.idea/
+android/local.properties
+android/app/release/
+android/app/debug/
+*.apk
+*.aab
+*.aar
+
+# Signing material - NEVER commit these.
+# A leaked upload key lets somebody else publish updates as you.
+*.keystore
+*.jks
+keystore.properties
+key.properties
+google-services.json
+service-account*.json
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+npm-debug.log*
+yarn-error.log*
+
+# Local scratch
+tmp/
+temp/

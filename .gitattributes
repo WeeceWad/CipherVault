@@ -1,0 +1,27 @@
+# Normalise line endings so Windows/Linux/CI checkouts agree.
+* text=auto eol=lf
+
+# Windows-only files keep CRLF or they won't run.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Gradle wrapper must stay executable and LF on all platforms.
+gradlew text eol=lf
+*.sh text eol=lf
+
+# Binary - never diff or convert.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.apk binary
+*.aab binary
+*.keystore binary
+*.jks binary
+*.jar binary
+*.exe binary
+
+# Vendored SDKs: keep them out of diffs and language stats.
+CipherVault-Desktop/lib/** linguist-vendored
+CipherVault-Extension/lib/** linguist-vendored

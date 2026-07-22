@@ -1,0 +1,41 @@
+rules_version = '2';
+
+// CipherVault Firestore security rules.
+//
+// DEPLOY THESE. As shipped, the project was in "allow everyone" test mode:
+// an unauthenticated request could read users/{anyUid} and pull down that
+// user's encrypted vault, their salt, and their master-password verifier.
+// Nothing stops an attacker enumerating or overwriting other people's vaults.
+//
+// Deploy with:   firebase deploy --only firestore:rules
+// Or paste into: Firebase console -> Firestore Database -> Rules -> Publish
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /users/{userId} {
+      // A signed-in user may only ever touch their own document.
+      allow read, delete: if request.auth != null && request.auth.uid == userId;
+
+      allow create, update: if request.auth != null
+        && request.auth.uid == userId
+        && isValidVault(request.resource.data);
+    }
+
+    // Anything not matched above is denied.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+
+  function isValidVault(data) {
+    return data.keys().hasAll(['vault', 'salt', 'hash'])
+      && data.vault is list
+      && data.salt is string
+      && data.hash is string
+      && data.salt.size() > 0
+      && data.hash.size() > 0
+      // Firestore caps a document at 1 MiB; reject anything near that so a
+      // runaway client can't wedge the account into an unwritable state.
+      && data.vault.size() <= 5000;
+  }
+}
