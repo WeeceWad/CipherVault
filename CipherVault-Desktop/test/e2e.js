@@ -207,7 +207,9 @@ const RENDERER_TEST = `(async () => {
   SC.setMasterHash('LOCALHASH');
   SC.setKdf({ v: 2, iterations: 600000 });
   SC.saveEncryptedItems([{ id: 'z', type: 'login', encryptedData: 'blob' }]);
-  SC.setFolders([{ id: 'folder_1', name: 'Work' }]);
+  // Folders are ciphertext now; adoption only has to carry the blob across
+  // intact, so a stand-in value is enough here.
+  SC.setFoldersEnc('FOLDERBLOB');
 
   SC.setScope('adoptuid');
   app.firebaseUser = { uid: 'adoptuid', email: 'adopt@example.com' };
@@ -230,8 +232,8 @@ const RENDERER_TEST = `(async () => {
   ok('adopt: uploaded to the right uid', uploaded && uploaded.u === 'adoptuid');
   ok('adopt: uploaded the local key material',
      uploaded && uploaded.payload.salt === 'LOCALSALT' && uploaded.payload.hash === 'LOCALHASH');
-  ok('adopt: uploaded the items and folders',
-     uploaded && uploaded.payload.vault.length === 1 && uploaded.payload.folders[0].name === 'Work');
+  ok('adopt: uploaded the items and the encrypted folder blob',
+     uploaded && uploaded.payload.vault.length === 1 && uploaded.payload.foldersEnc === 'FOLDERBLOB');
   ok('adopt: account namespace now holds the vault',
      localStorage.getItem('cv:u:adoptuid:salt') === 'LOCALSALT');
   ok('adopt: offline namespace left intact',
@@ -281,6 +283,41 @@ const RENDERER_TEST = `(async () => {
   ok('sl: legacy plaintext key migrated', app.getSimpleLoginKey() === 'old_plain_key_777');
   ok('sl: legacy plaintext slot cleared', localStorage.getItem('cv:local:sl_key') === null);
   ok('sl: migrated key is now encrypted', !JSON.stringify(localStorage).includes('old_plain_key_777'));
+
+  localStorage.clear();
+
+  // ---- 14d. folder names are encrypted, and old plaintext lists migrate ----
+  localStorage.clear();
+  SC.setScope(null);
+  $('btn-welcome-local').click();
+  await settle(50);
+  const FPASS = 'FolderCrypt!2026';
+  $('create-pass-input').value = FPASS;
+  $('confirm-pass-input').value = FPASS;
+  $('setup-form').dispatchEvent(new Event('submit', { cancelable: true }));
+  await settle(4000);
+
+  app.folders = [{ id: 'folder_x', name: 'SECRETFOLDERNAME' }];
+  await app.saveFolders({ sync: false });
+  ok('folders: name not readable on disk', !JSON.stringify(localStorage).includes('SECRETFOLDERNAME'));
+  ok('folders: encrypted slot written', !!SC.getFoldersEnc());
+
+  app.lockVault();
+  await settle(120);
+  ok('folders: cleared from memory on lock', app.folders.length === 0);
+
+  $('master-pass-input').value = FPASS;
+  await app.handleUnlock();
+  await settle(2500);
+  ok('folders: restored after unlock', app.folders.length === 1 && app.folders[0].name === 'SECRETFOLDERNAME');
+
+  // A vault written before v1.4 has a plaintext list and no encrypted one.
+  SC.setFoldersEnc('');
+  localStorage.setItem('cv:local:folders', JSON.stringify([{ id: 'folder_old', name: 'OLDPLAINFOLDER' }]));
+  await app.loadFolders();
+  ok('folders: legacy plaintext list migrated', app.folders.length === 1 && app.folders[0].name === 'OLDPLAINFOLDER');
+  ok('folders: legacy plaintext slot cleared', localStorage.getItem('cv:local:folders') === null);
+  ok('folders: migrated list is encrypted', !JSON.stringify(localStorage).includes('OLDPLAINFOLDER'));
 
   localStorage.clear();
 

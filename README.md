@@ -56,11 +56,11 @@ your phone can never open your vault again.
 
 ---
 
-## 1. Deploy the Firestore rules first
+## 1. Firestore rules
 
-**This is not optional.** The project is currently in open test mode: anyone on
-the internet can read `users/{anyUid}` and download any user's encrypted vault,
-salt and master-password verifier, and overwrite it.
+Deployed and verified: unauthenticated reads and writes of `users/{uid}` both
+return 403. **Redeploy after any change to `firestore.rules`** — the file in the
+repo is not what's live until you publish it.
 
 Paste `firestore.rules` into **Firebase console → Firestore Database → Rules →
 Publish**, or:
@@ -179,15 +179,35 @@ node scripts/check-parity.js
   unlock, re-keyed with a fresh salt and re-encrypted automatically. Nothing is
   lost and no action is needed.
 - **Auto-lock** defaults to 15 minutes idle (Settings → Security & Automation).
-- **What Firebase can see:** your email, and an opaque blob. Item names,
-  usernames, passwords, notes, card numbers and folder names are all inside the
-  encrypted payload.
+- **What Firebase can see:** your email address, and per vault entry: an opaque
+  ciphertext blob, its `type` (login / note / card / …), its favourite and
+  trashed flags, and a creation timestamp. Everything with content in it — item
+  names, usernames, passwords, notes, card numbers, TOTP secrets, folder names
+  and your SimpleLogin key — is inside the encrypted payload.
+
+  So the server can tell **how many** items you have, roughly what kinds, and
+  when you created them. It cannot tell what any of them are. Closing that
+  metadata gap would mean encrypting the whole vault as one blob, which breaks
+  per-item sync; it's a deliberate trade, not an oversight.
 - The Firebase `apiKey` in the source is not a secret — it identifies the
   project. Access control is entirely the job of the rules in §1.
 
 ### Known limitations
 
 - **Sync is last-write-wins.** Editing the same vault on two devices while both
-  are online can lose the earlier edit. There is no merge.
+  are online can lose the earlier edit. There is no merge. This is a data-loss
+  risk, not a confidentiality one.
+- **Exports are plaintext by design**, so other password managers can read them.
+  Both apps say so before writing the file. Delete the file when you're done.
+- **The web build is the weakest of the four.** Its code is re-delivered from
+  GitHub Pages on every visit, so whoever controls the repo controls the crypto
+  running in your browser. The desktop and Android builds are signed artifacts
+  you installed once. Prefer them for day-to-day use.
+- **`weecewad.github.io` is one origin for all your Pages sites.** Browser
+  storage is shared across them, so another project you publish there could read
+  CipherVault's stored blob — encrypted, but still. Worth knowing before you
+  host something else on that account.
+- **Anyone holding your unlocked phone can unlock your computers** via QR.
+  Inherent to that feature; the approval prompt is the guard.
 - Passkey items store metadata only; they are notes about a passkey, not usable
   WebAuthn credentials.

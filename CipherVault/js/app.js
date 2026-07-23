@@ -310,16 +310,18 @@
       await firebase.auth().sendPasswordResetEmail(email);
     }
 
-    static async uploadVault(uid, { vault, folders, salt, hash, kdf, slKeyEnc }) {
+    static async uploadVault(uid, { vault, foldersEnc, salt, hash, kdf, slKeyEnc }) {
       if (typeof firebase === 'undefined') throw new Error("Firebase SDK not loaded.");
       if (!uid) throw new Error("Not signed in.");
       if (!salt || !hash) throw new Error("Refusing to sync a vault with no master key material.");
 
       const db = firebase.firestore();
       await db.collection("users").doc(uid).set({
-        schemaVersion: 3,
+        schemaVersion: 4,
         vault: Array.isArray(vault) ? vault : [],
-        folders: Array.isArray(folders) ? folders : [],
+        // Encrypted with the vault key: folder names are not metadata we want
+        // the server to hold. `folders` is no longer written.
+        foldersEnc: typeof foldersEnc === "string" ? foldersEnc : "",
         salt: salt,
         hash: hash,
         kdf: kdf || { v: 1, iterations: 100000 },
@@ -394,7 +396,9 @@
       // good local data with `undefined`.
       return {
         vault: Array.isArray(data.vault) ? data.vault : [],
-        folders: Array.isArray(data.folders) ? data.folders : [],
+        foldersEnc: typeof data.foldersEnc === "string" ? data.foldersEnc : "",
+        // Read only so a vault written before v1.4 can be migrated.
+        legacyFolders: Array.isArray(data.folders) ? data.folders : [],
         salt: typeof data.salt === "string" ? data.salt : null,
         hash: typeof data.hash === "string" ? data.hash : null,
         kdf: data.kdf && typeof data.kdf.v === "number" ? data.kdf : { v: 1, iterations: 100000 },
@@ -453,7 +457,7 @@
           hash: this.getMasterHash(),
           kdf: this.getKdf(),
           items: this.getEncryptedItems(),
-          folders: this.getFolders(),
+          foldersEnc: this.getFoldersEnc(),
           slKeyEnc: this.getSimpleLoginKeyEnc(),
         };
       } finally {
@@ -574,7 +578,24 @@
       localStorage.setItem("ciphervault_auto_lock", minutes);
     }
 
-    static getFolders() {
+    /**
+     * Folder names.
+     *
+     * Encrypted with the vault key, like the SimpleLogin key. They used to be
+     * written in the clear, which meant "Banking", "Crypto" or an employer's
+     * name were readable from disk without unlocking and were visible in the
+     * synced document. The names alone say a lot about what a vault contains.
+     *
+     * `folders` (plaintext) is only still read so an existing list can be
+     * migrated on the next unlock.
+     */
+    static getFoldersEnc() { return this._get("folders_enc") || ""; }
+    static setFoldersEnc(blob) {
+      if (blob) this._set("folders_enc", blob);
+      else this._del("folders_enc");
+    }
+
+    static getLegacyFolders() {
       const f = this._get("folders");
       if (!f) return [];
       try {
@@ -584,13 +605,12 @@
         return [];
       }
     }
-    static setFolders(folders) {
-      this._set("folders", JSON.stringify(Array.isArray(folders) ? folders : []));
-    }
+    static clearLegacyFolders() { this._del("folders"); }
 
     /** Wipes every trace of the currently scoped vault from this device. */
     static wipeScope() {
-      ["salt", "hash", "kdf", "items", "sl_key", "sl_key_enc", "folders"].forEach((n) => this._del(n));
+      ["salt", "hash", "kdf", "items", "sl_key", "sl_key_enc", "folders", "folders_enc"]
+        .forEach((n) => this._del(n));
     }
 
     static getLocalChoice() { return localStorage.getItem("cv:local_choice") === "true"; }
@@ -910,7 +930,8 @@
     async init() {
       StorageController.migrateLegacyData();
       StorageController.setScope(null);
-      this.folders = StorageController.getFolders();
+      // Folders are encrypted, so they stay empty until the vault is unlocked.
+      this.folders = [];
 
       this.bindEvents();
       FirebaseSyncEngine.init();
@@ -963,7 +984,7 @@
           this.selectedItemId = null;
           this.editingItemId = null;
           StorageController.setScope(newUid);
-          this.folders = StorageController.getFolders();
+          this.folders = [];
           this.renderFoldersList();
           this.renderList();
           this.showLockScreen();
@@ -1099,9 +1120,13 @@
         StorageController.setMasterHash(cloud.hash);
         StorageController.setKdf(cloud.kdf);
         StorageController.saveEncryptedItems(cloud.vault);
-        StorageController.setFolders(cloud.folders);
         StorageController.setSimpleLoginKeyEnc(cloud.slKeyEnc);
-        this.folders = cloud.folders;
+        StorageController.setFoldersEnc(cloud.foldersEnc);
+        // A vault written before v1.4 still has plaintext folders; keep them
+        // so the next unlock can encrypt them.
+        if (!cloud.foldersEnc && cloud.legacyFolders.length) {
+          StorageController._set("folders", JSON.stringify(cloud.legacyFolders));
+        }
 
         // The master password behind the cached key no longer matches the cloud
         // vault, so the in-memory key can't decrypt it. Force a re-unlock.
@@ -1109,6 +1134,7 @@
           this.aesKey = null;
           this.decryptedVault = [];
           this.simpleLoginKey = "";
+          this.folders = [];
           this.showLockScreen();
         }
 
@@ -1133,20 +1159,20 @@
         );
         if (ok) {
           // Copy the offline namespace into this account's namespace.
-          const { salt, hash, kdf, items, folders, slKeyEnc } =
+          const { salt, hash, kdf, items, foldersEnc, slKeyEnc } =
             StorageController.readScope(StorageController.SCOPE_LOCAL);
 
           StorageController.setSalt(salt);
           StorageController.setMasterHash(hash);
           StorageController.setKdf(kdf);
           StorageController.saveEncryptedItems(items);
-          StorageController.setFolders(folders);
+          StorageController.setFoldersEnc(foldersEnc);
           StorageController.setSimpleLoginKeyEnc(slKeyEnc);
-          this.folders = folders;
+          await this.loadFolders();
           this.renderFoldersList();
 
           try {
-            await FirebaseSyncEngine.uploadVault(uid, { vault: items, folders, salt, hash, kdf, slKeyEnc });
+            await FirebaseSyncEngine.uploadVault(uid, { vault: items, foldersEnc, salt, hash, kdf, slKeyEnc });
             this.showToast("Offline vault linked to your account.");
           } catch (err) {
             console.error("Failed to upload adopted vault:", err);
@@ -1364,7 +1390,7 @@
             StorageController.setMasterHash(hash);
             StorageController.setKdf(kdf);
             StorageController.saveEncryptedItems([]);
-            StorageController.setFolders([]);
+            StorageController.setFoldersEnc("");
 
             this.aesKey = aesKey;
             this.decryptedVault = [];
@@ -1377,7 +1403,7 @@
             if (this.currentUid) {
               try {
                 await FirebaseSyncEngine.uploadVault(this.currentUid, {
-                  vault: [], folders: [], salt, hash, kdf, slKeyEnc: "",
+                  vault: [], foldersEnc: "", salt, hash, kdf, slKeyEnc: "",
                 });
               } catch (err) {
                 console.error("Failed to provision cloud vault:", err);
@@ -1616,9 +1642,8 @@
           if (!name || !name.trim()) return;
 
           this.folders.push({ id: "folder_" + Date.now(), name: name.trim() });
-          StorageController.setFolders(this.folders);
           this.renderFoldersList();
-          await this.saveEncryptedVault();
+          await this.saveFolders();
           this.showToast("Folder created!");
         });
       }
@@ -2095,6 +2120,7 @@
       this.aesKey = null;
       this.decryptedVault = [];
       this.simpleLoginKey = "";
+      this.folders = [];
       this.selectedItemId = null;
       this.editingItemId = null;
       this.renderList();
@@ -2132,7 +2158,7 @@
       }
 
       this.decryptedVault = decrypted;
-      this.folders = StorageController.getFolders();
+      await this.loadFolders();
       await this.loadSimpleLoginKey();
       this.renderFoldersList();
       this.renderList();
@@ -2147,6 +2173,55 @@
     // carried in the synced document so it follows the account rather than
     // having to be re-entered on every device.
     // ---------------------------------------------------------------------
+
+    // ---------------------------------------------------------------------
+    // Folders
+    //
+    // Held in memory while unlocked, encrypted with the vault key at rest and
+    // in the synced document. Folder names are not neutral metadata - a list
+    // reading "Banking, Crypto, Work" describes the vault's contents.
+    // ---------------------------------------------------------------------
+
+    async loadFolders() {
+      this.folders = [];
+      if (!this.aesKey) return;
+
+      const blob = StorageController.getFoldersEnc();
+      if (blob) {
+        try {
+          const parsed = await CryptoEngine.decryptJson(blob, this.aesKey);
+          if (Array.isArray(parsed)) this.folders = parsed;
+        } catch (err) {
+          console.warn("Could not decrypt the folder list.", err);
+        }
+      }
+
+      await this.migrateFolders();
+    }
+
+    /** Moves a pre-1.4 plaintext folder list into the encrypted store, once. */
+    async migrateFolders() {
+      const legacy = StorageController.getLegacyFolders();
+      if (!legacy.length) return;
+
+      if (!this.folders.length) {
+        this.folders = legacy;
+        await this.saveFolders({ sync: false });
+      }
+      StorageController.clearLegacyFolders();
+    }
+
+    /** Persists the in-memory folder list. */
+    async saveFolders({ sync = true } = {}) {
+      if (!this.aesKey) return;
+
+      const blob = this.folders.length
+        ? await CryptoEngine.encryptJson(this.folders, this.aesKey)
+        : "";
+      StorageController.setFoldersEnc(blob);
+
+      if (sync) await this.saveEncryptedVault();
+    }
 
     async loadSimpleLoginKey() {
       this.simpleLoginKey = "";
@@ -2377,8 +2452,7 @@
           });
           if (this.activeCategory === folder.id) this.activeCategory = "all";
 
-          StorageController.setFolders(this.folders);
-          await this.saveEncryptedVault();
+          await this.saveFolders();
           this.renderFoldersList();
           this.renderList();
           this.showToast("Folder deleted.");
@@ -3166,14 +3240,13 @@
         });
       }
       StorageController.saveEncryptedItems(encryptedList);
-      StorageController.setFolders(this.folders);
 
       if (this.currentUid) {
         this.updateSyncIndicator(true);
         try {
           await FirebaseSyncEngine.uploadVault(this.currentUid, {
             vault: encryptedList,
-            folders: this.folders,
+            foldersEnc: StorageController.getFoldersEnc(),
             salt: StorageController.getSalt(),
             hash: StorageController.getMasterHash(),
             kdf: StorageController.getKdf(),
