@@ -139,7 +139,9 @@ npm test
 This boots the real Electron window and drives the real UI: account creation,
 master password rules, add/lock/unlock round-trip, wrong-password rejection,
 per-account isolation, legacy vault migration, auto-lock, trash filtering, and
-the encrypted SimpleLogin key. 61 checks.
+the encrypted SimpleLogin key. 61 checks, plus 39 more covering the QR unlock
+handshake — including that a captured response cannot be replayed, a different
+keypair cannot decrypt it, and tampered ciphertext is rejected.
 
 Cross-platform key derivation:
 

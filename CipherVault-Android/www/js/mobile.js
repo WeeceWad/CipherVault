@@ -72,6 +72,11 @@
       this.folders = [];
       // Only populated while unlocked; encrypted with the vault key at rest.
       this.simpleLoginKey = '';
+      // Held only while the vault is open, so a scanned QR code can authorise
+      // a desktop. The phone already holds every decrypted secret in memory at
+      // this point, so retaining the password too adds little exposure - but it
+      // is dropped the instant the vault locks, same as everything else.
+      this.masterPassword = '';
       this.firebaseUser = null;
       this.currentUid = null;
       this.activeCategory = 'all';
@@ -306,6 +311,122 @@
       ['touchstart', 'keydown', 'click'].forEach((evt) => {
         window.addEventListener(evt, () => this.resetIdleTimer(), { passive: true, capture: true });
       });
+    }
+
+    // ------------------------------------------------------ QR unlock a PC
+    //
+    // The phone is the authority here: it is already unlocked, so it holds the
+    // master password. Scanning the desktop's QR code gives us an ephemeral
+    // public key that arrived visually rather than over the network, which is
+    // what stops anyone in the middle substituting their own. We seal the
+    // master password to that key and post only the ciphertext.
+
+    async toolQrUnlock() {
+      const body = el('div', { class: 'tool-body' });
+
+      const explain = el('p', { class: 'row-desc', style: 'line-height:1.55;' , text:
+        'On your computer, open CipherVault and press “Unlock with my phone” on the lock screen. Then scan the code it shows.' });
+
+      const guard = (title, text) => {
+        body.appendChild(el('div', { class: 'empty' }, [
+          el('div', { class: 'empty-icon', html: ICONS.warn }),
+          el('h3', { text: title }),
+          el('p', { text }),
+        ]));
+        this.openSheet({ title: 'Unlock a PC', body });
+      };
+
+      if (!this.aesKey) {
+        return guard('Vault is locked', 'Unlock your vault on this phone first — it is what authorises the computer.');
+      }
+      if (!this.currentUid) {
+        return guard('Not signed in', 'QR unlock needs both devices signed in to the same CipherVault account.');
+      }
+      if (!this.masterPassword) {
+        return guard('Unlock again first', 'For this to work, unlock this phone with your master password or biometrics once more, then try again.');
+      }
+      if (!isNative || !CapPlugins.CapacitorBarcodeScanner) {
+        return guard('Camera unavailable', 'Scanning needs the CipherVault Android app — it is not available in a browser.');
+      }
+
+      const status = el('p', { class: 'row-desc' });
+
+      const scanBtn = el('button', {
+        class: 'btn btn-primary btn-block',
+        text: 'Scan the code',
+        on: { click: () => this.scanForPcUnlock(status, scanBtn) },
+      });
+
+      body.append(explain, scanBtn, status);
+      this.openSheet({ title: 'Unlock a PC', body });
+    }
+
+    async scanForPcUnlock(status, button) {
+      button.disabled = true;
+      status.textContent = '';
+
+      let scanned;
+      try {
+        const result = await CapPlugins.CapacitorBarcodeScanner.scanBarcode({
+          hint: 17,              // ALL — the QR-only hint is unreliable across devices
+          cameraDirection: 1,    // rear camera
+          scanOrientation: 3,    // adaptive
+        });
+        scanned = result && result.ScanResult;
+      } catch (err) {
+        button.disabled = false;
+        // Backing out of the scanner is not an error worth shouting about.
+        if (err && /cancel/i.test(err.message || '')) return;
+        status.textContent = 'Could not open the camera: ' + ((err && err.message) || 'unknown error');
+        return;
+      }
+
+      button.disabled = false;
+      if (!scanned) return;
+
+      let session;
+      try {
+        session = LinkSessionEngine.parseQrPayload(scanned);
+      } catch (err) {
+        status.textContent = err.message;
+        return;
+      }
+
+      const approved = await this.confirm({
+        title: 'Unlock your computer?',
+        body: 'This sends your master password to that computer, encrypted so only it can read it. Only approve this if you are looking at your own screen right now.',
+        confirmLabel: 'Unlock it',
+        icon: ICONS.shield,
+      });
+      if (!approved) {
+        status.textContent = 'Cancelled.';
+        return;
+      }
+
+      status.textContent = 'Approving…';
+      try {
+        const response = await LinkSessionEngine.buildResponse(
+          session.sessionId,
+          session.publicKey,
+          this.masterPassword
+        );
+        await FirebaseSyncEngine.postLinkResponse(this.currentUid, session.sessionId, response);
+
+        status.textContent = '';
+        this.haptic();
+        this.closeSheet();
+        this.dialog({
+          title: 'Computer unlocked',
+          icon: ICONS.check,
+          body: 'Your vault should now be open on that computer. The code you scanned is already used up and cannot be reused.',
+          actions: [{ label: 'Done', style: 'btn-primary' }],
+        });
+      } catch (err) {
+        console.error('QR approval failed:', err);
+        status.textContent = (err && err.code === 'permission-denied')
+          ? 'Blocked by Firestore rules — redeploy firestore.rules.'
+          : 'Could not reach your computer: ' + ((err && err.message) || 'unknown error');
+      }
     }
 
     // ---------------------------------------------------- biometric unlock
@@ -705,6 +826,7 @@
           this.aesKey = null;
           this.decryptedVault = [];
           this.simpleLoginKey = '';
+          this.masterPassword = '';
           StorageController.setScope(newUid);
           this.folders = StorageController.getFolders();
           this.showLockScreen();
@@ -760,6 +882,7 @@
           this.aesKey = null;
           this.decryptedVault = [];
           this.simpleLoginKey = '';
+          this.masterPassword = '';
           this.showLockScreen();
         }
         if (this.aesKey) await this.loadAndDecrypt();
@@ -1004,6 +1127,7 @@
         StorageController.setFolders([]);
 
         this.aesKey = aesKey;
+        this.masterPassword = pass;
         this.decryptedVault = [];
         this.folders = [];
 
@@ -1050,6 +1174,7 @@
         }
 
         this.aesKey = result.aesKey;
+        this.masterPassword = password;
         input.value = '';
         const failed = await this.loadAndDecrypt();
         this.enterApp();
@@ -1098,6 +1223,7 @@
       this.aesKey = null;
       this.decryptedVault = [];
       this.simpleLoginKey = '';
+      this.masterPassword = '';
       this.activeTotp = null;
       this.closeSheet();
       this.closeDialog();
@@ -1723,6 +1849,7 @@
       if (name === 'masking') return this.toolMasking();
       if (name === 'health') return this.toolHealth();
       if (name === 'breach') return this.toolBreach();
+      if (name === 'qr-unlock') return this.toolQrUnlock();
     }
 
     toolGenerator() {
@@ -2480,6 +2607,7 @@
       PasswordHealthEngine,
       SimpleLoginClient,
       BreachScannerEngine,
+      LinkSessionEngine,
     };
   }
 

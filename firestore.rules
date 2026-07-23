@@ -19,6 +19,16 @@ service cloud.firestore {
       allow create, update: if request.auth != null
         && request.auth.uid == userId
         && isValidVault(request.resource.data);
+
+      // QR unlock handshake. Holds only two ephemeral ECDH public keys and a
+      // ciphertext the server cannot open (see LinkSessionEngine), and both
+      // devices must already be signed in as this same user. Documents are
+      // single-use and deleted as soon as they have been consumed.
+      match /linkSessions/{sessionId} {
+        allow read, write, delete: if request.auth != null
+          && request.auth.uid == userId
+          && sessionId.size() <= 64;
+      }
     }
 
     // Anything not matched above is denied.

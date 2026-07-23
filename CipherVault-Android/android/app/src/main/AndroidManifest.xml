@@ -55,4 +55,14 @@
       nothing.
     -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!--
+      Scanning the QR code shown by a signed-in desktop, to unlock it from this
+      phone. The barcode-scanner plugin ships an empty manifest and does not
+      declare this itself, so without it the scanner fails at runtime.
+      Camera is optional hardware: everything else in the app works without it.
+    -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
 </manifest>

@@ -335,6 +335,53 @@
       await firebase.firestore().collection("users").doc(uid).delete();
     }
 
+    // --- QR unlock transport -------------------------------------------
+    // Only ever carries ephemeral public keys and a ciphertext; see
+    // LinkSessionEngine for why that is safe to put in a database.
+
+    static _linkDoc(uid, sessionId) {
+      return firebase.firestore().collection("users").doc(uid)
+        .collection("linkSessions").doc(sessionId);
+    }
+
+    /** Desktop: waits for the phone to approve. Returns an unsubscribe fn. */
+    static watchLinkSession(uid, sessionId, onResponse, onError) {
+      if (typeof firebase === 'undefined' || !uid) return () => {};
+
+      return this._linkDoc(uid, sessionId).onSnapshot(
+        (doc) => {
+          if (!doc.exists) return;
+          const data = doc.data() || {};
+          if (typeof data.pk === "string" && typeof data.ct === "string") {
+            onResponse({ publicKey: data.pk, ciphertext: data.ct });
+          }
+        },
+        (err) => { if (onError) onError(err); }
+      );
+    }
+
+    /** Phone: publishes the sealed approval. */
+    static async postLinkResponse(uid, sessionId, response) {
+      if (typeof firebase === 'undefined') throw new Error("Firebase SDK not loaded.");
+      if (!uid) throw new Error("Not signed in.");
+
+      await this._linkDoc(uid, sessionId).set({
+        pk: response.publicKey,
+        ct: response.ciphertext,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+
+    /** Single-use: the document is destroyed as soon as it has been consumed. */
+    static async deleteLinkSession(uid, sessionId) {
+      if (typeof firebase === 'undefined' || !uid || !sessionId) return;
+      try {
+        await this._linkDoc(uid, sessionId).delete();
+      } catch (err) {
+        console.warn("Could not clear the link session:", err);
+      }
+    }
+
     static async downloadVault(uid) {
       if (typeof firebase === 'undefined') return null;
       if (!uid) return null;
@@ -695,6 +742,152 @@
   }
 
 
+  // --- QR UNLOCK / DEVICE LINK ENGINE ---
+  //
+  // Unlocks a signed-in desktop by scanning a QR code with an already-unlocked
+  // phone. The master password has to travel from phone to desktop, and the
+  // only channel they share is Firestore - which must never see it.
+  //
+  // So the QR carries an ephemeral ECDH public key generated on the desktop.
+  // The phone generates its own pair, does ECDH against the key it read off the
+  // screen, derives an AES-GCM key through HKDF, and writes only the resulting
+  // ciphertext plus its own public key. The desktop performs the same ECDH and
+  // decrypts.
+  //
+  // Firestore therefore stores two public keys and a ciphertext. Recovering the
+  // password from those is the ECDH problem. The screen is the authenticated
+  // channel: an attacker on the network cannot substitute the desktop's public
+  // key, because it reached the phone as pixels rather than over the wire.
+  //
+  // Sessions are random, single-use, expire in well under a minute, and the
+  // document is deleted the moment it has been consumed.
+  class LinkSessionEngine {
+    static PROTOCOL_VERSION = 1;
+    static SESSION_TTL_MS = 45000;
+    static HKDF_INFO = "ciphervault-link-v1";
+
+    /** Desktop: mints a session and the payload to render as a QR code. */
+    static async createSession() {
+      const keyPair = await crypto.subtle.generateKey(
+        { name: "ECDH", namedCurve: "P-256" },
+        false,                       // private key stays non-extractable
+        ["deriveBits"]
+      );
+
+      const sessionId = CryptoEngine.bytesToBase64(crypto.getRandomValues(new Uint8Array(16)))
+        .replace(/[+/=]/g, (c) => ({ "+": "-", "/": "_", "=": "" }[c]));
+
+      const publicKey = CryptoEngine.bytesToBase64(
+        new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey))
+      );
+
+      return {
+        sessionId,
+        keyPair,
+        createdAt: Date.now(),
+        qrPayload: JSON.stringify({ v: this.PROTOCOL_VERSION, s: sessionId, k: publicKey }),
+      };
+    }
+
+    /** Phone: reads a scanned QR string, rejecting anything malformed. */
+    static parseQrPayload(text) {
+      let parsed;
+      try {
+        parsed = JSON.parse(text);
+      } catch (e) {
+        throw new Error("That isn't a CipherVault code.");
+      }
+
+      if (!parsed || parsed.v !== this.PROTOCOL_VERSION) {
+        throw new Error("That code is from a different version of CipherVault.");
+      }
+      if (typeof parsed.s !== "string" || !parsed.s || typeof parsed.k !== "string" || !parsed.k) {
+        throw new Error("That code is incomplete. Try again.");
+      }
+
+      // A P-256 uncompressed point is 65 bytes; anything else is not a key.
+      let keyBytes;
+      try {
+        keyBytes = CryptoEngine.base64ToBytes(parsed.k);
+      } catch (e) {
+        throw new Error("That code is malformed.");
+      }
+      if (keyBytes.length !== 65 || keyBytes[0] !== 0x04) {
+        throw new Error("That code is malformed.");
+      }
+
+      return { version: parsed.v, sessionId: parsed.s, publicKey: parsed.k };
+    }
+
+    /**
+     * Both sides run this and land on the same AES key.
+     * The session id is mixed in as HKDF salt so two concurrent sessions can
+     * never derive the same key even if a keypair were somehow reused.
+     */
+    static async deriveSharedKey(privateKey, peerPublicKeyBase64, sessionId) {
+      const peerPublicKey = await crypto.subtle.importKey(
+        "raw",
+        CryptoEngine.base64ToBytes(peerPublicKeyBase64),
+        { name: "ECDH", namedCurve: "P-256" },
+        false,
+        []
+      );
+
+      const sharedBits = await crypto.subtle.deriveBits(
+        { name: "ECDH", public: peerPublicKey },
+        privateKey,
+        256
+      );
+
+      const hkdfKey = await crypto.subtle.importKey("raw", sharedBits, "HKDF", false, ["deriveKey"]);
+
+      return crypto.subtle.deriveKey(
+        {
+          name: "HKDF",
+          hash: "SHA-256",
+          salt: new TextEncoder().encode(sessionId),
+          info: new TextEncoder().encode(this.HKDF_INFO),
+        },
+        hkdfKey,
+        { name: "AES-GCM", length: 256 },
+        false,
+        ["encrypt", "decrypt"]
+      );
+    }
+
+    /** Phone: seals the master password for this one desktop session. */
+    static async buildResponse(sessionId, desktopPublicKeyBase64, masterPassword) {
+      const keyPair = await crypto.subtle.generateKey(
+        { name: "ECDH", namedCurve: "P-256" },
+        false,
+        ["deriveBits"]
+      );
+
+      const sharedKey = await this.deriveSharedKey(keyPair.privateKey, desktopPublicKeyBase64, sessionId);
+
+      return {
+        publicKey: CryptoEngine.bytesToBase64(
+          new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey))
+        ),
+        ciphertext: await CryptoEngine.encrypt(masterPassword, sharedKey),
+      };
+    }
+
+    /** Desktop: opens the phone's response. */
+    static async openResponse(keyPair, sessionId, response) {
+      if (!response || typeof response.publicKey !== "string" || typeof response.ciphertext !== "string") {
+        throw new Error("The approval from your phone was incomplete.");
+      }
+
+      const sharedKey = await this.deriveSharedKey(keyPair.privateKey, response.publicKey, sessionId);
+      return CryptoEngine.decrypt(response.ciphertext, sharedKey);
+    }
+
+    static isExpired(createdAt) {
+      return Date.now() - createdAt > this.SESSION_TTL_MS;
+    }
+  }
+
   // --- MAIN APPLICATION CONTROLLER ---
   class CipherVaultApp {
     constructor() {
@@ -992,6 +1185,7 @@
       if (setupForm) setupForm.classList.add("hidden");
       if (unlockForm) unlockForm.classList.add("hidden");
       if (welcomeForm) welcomeForm.classList.add("hidden");
+      document.getElementById("btn-qr-unlock")?.classList.add("hidden");
 
       const account = this.firebaseUser ? this.firebaseUser.email : null;
 
@@ -1010,6 +1204,9 @@
         if (lockScreen && !lockScreen.classList.contains("hidden")) {
           document.getElementById("master-pass-input")?.focus();
         }
+
+        // Both devices have to be on the same account for the handshake.
+        document.getElementById("btn-qr-unlock")?.classList.toggle("hidden", !this.currentUid);
       } else if (this.firebaseUser || StorageController.getLocalChoice()) {
         if (setupForm) setupForm.classList.remove("hidden");
         if (lockTitle) lockTitle.textContent = "Create Master Password";
@@ -1058,6 +1255,9 @@
       }
       // Sidebar "Login" / account button.
       document.getElementById("btn-sync-trigger")?.addEventListener("click", () => this.openModal("modal-firebase-auth"));
+
+      document.getElementById("btn-qr-unlock")?.addEventListener("click", () => this.openQrUnlock());
+      document.getElementById("btn-close-qr")?.addEventListener("click", () => this.stopQrSession());
       // Global Keyboard Shortcuts
       document.addEventListener("keydown", (e) => {
         if ((e.ctrlKey || e.metaKey) && e.key === "k") {
@@ -1558,6 +1758,191 @@
       }
     }
 
+    // ---------------------------------------------------------------------
+    // QR unlock (desktop side)
+    //
+    // Shows a rotating QR code carrying an ephemeral public key, and waits for
+    // an already-unlocked phone to send back the master password sealed to
+    // that key. See LinkSessionEngine for the protocol and why the database
+    // never learns anything useful.
+    // ---------------------------------------------------------------------
+
+    async openQrUnlock() {
+      if (!this.currentUid) {
+        this.showToast("Sign in first — QR unlock needs both devices on the same account.");
+        return;
+      }
+      if (typeof qrcode === "undefined") {
+        this.showToast("QR support failed to load.");
+        return;
+      }
+
+      this.openModal("modal-qr-unlock");
+      document.getElementById("qr-error").classList.add("hidden");
+      document.getElementById("qr-status").textContent = "Waiting for your phone…";
+      await this.rotateQrSession();
+    }
+
+    async rotateQrSession() {
+      this.stopQrSession({ keepModal: true });
+
+      let session;
+      try {
+        session = await LinkSessionEngine.createSession();
+      } catch (err) {
+        console.error("Could not start a link session:", err);
+        this.showQrError("Could not start a session: " + err.message);
+        return;
+      }
+
+      this.qrSession = session;
+      this.renderQrCode(session.qrPayload);
+
+      this.qrUnsubscribe = FirebaseSyncEngine.watchLinkSession(
+        this.currentUid,
+        session.sessionId,
+        (response) => this.handleQrResponse(response),
+        (err) => {
+          console.error("Link session listener failed:", err);
+          this.showQrError(
+            err && err.code === "permission-denied"
+              ? "Firestore rules are blocking QR unlock — redeploy firestore.rules."
+              : "Lost connection while waiting for your phone."
+          );
+        }
+      );
+
+      // Rotate before the session can go stale, so a photographed code is
+      // useless within the minute.
+      const ttl = LinkSessionEngine.SESSION_TTL_MS;
+      const bar = document.getElementById("qr-timer-bar");
+      let remaining = ttl;
+
+      if (bar) {
+        bar.style.transition = "none";
+        bar.style.width = "100%";
+        // Force a reflow so the reset width applies before the animation.
+        void bar.offsetWidth;
+        bar.style.transition = "width 1s linear";
+      }
+
+      this.qrTicker = setInterval(() => {
+        remaining -= 1000;
+        if (bar) bar.style.width = `${Math.max(0, (remaining / ttl) * 100)}%`;
+        if (remaining <= 0) this.rotateQrSession();
+      }, 1000);
+    }
+
+    renderQrCode(payload) {
+      const canvas = document.getElementById("qr-canvas");
+      if (!canvas) return;
+
+      const qr = qrcode(0, "M");
+      qr.addData(payload);
+      qr.make();
+
+      const count = qr.getModuleCount();
+      const size = canvas.width;
+      const quiet = 2;
+      const scale = size / (count + quiet * 2);
+
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#F8FAFC";
+      ctx.fillRect(0, 0, size, size);
+      ctx.fillStyle = "#0B0C10";
+
+      for (let row = 0; row < count; row++) {
+        for (let col = 0; col < count; col++) {
+          if (!qr.isDark(row, col)) continue;
+          ctx.fillRect(
+            Math.round((col + quiet) * scale),
+            Math.round((row + quiet) * scale),
+            Math.ceil(scale),
+            Math.ceil(scale)
+          );
+        }
+      }
+    }
+
+    async handleQrResponse(response) {
+      const session = this.qrSession;
+      if (!session || this.qrConsuming) return;
+      this.qrConsuming = true;
+
+      const status = document.getElementById("qr-status");
+      if (status) status.textContent = "Approved — unlocking…";
+
+      const sessionId = session.sessionId;
+
+      try {
+        if (LinkSessionEngine.isExpired(session.createdAt)) {
+          throw new Error("That code had already expired. Scan the new one.");
+        }
+
+        const masterPassword = await LinkSessionEngine.openResponse(session.keyPair, sessionId, response);
+
+        // The password still has to satisfy the stored verifier: a phone
+        // cannot force the desktop open with the wrong one.
+        const result = await CryptoEngine.unlock(
+          masterPassword,
+          StorageController.getSalt(),
+          StorageController.getMasterHash(),
+          StorageController.getKdf()
+        );
+        if (!result.ok) throw new Error("Your phone sent a master password this vault doesn't accept.");
+
+        this.aesKey = result.aesKey;
+        const failed = await this.loadAndDecryptVault();
+
+        this.stopQrSession();
+        this.closeModal("modal-qr-unlock");
+        document.getElementById("master-lock-screen").classList.add("hidden");
+        this.resetIdleTimer();
+        this.showToast(
+          failed > 0
+            ? `Unlocked from your phone. ${failed} item(s) could not be decrypted.`
+            : "Unlocked from your phone."
+        );
+
+        if (result.needsUpgrade) await this.upgradeKdf(masterPassword);
+      } catch (err) {
+        console.error("QR unlock failed:", err);
+        this.showQrError(err.message);
+        this.qrConsuming = false;
+      } finally {
+        // The session is single-use whatever happened.
+        FirebaseSyncEngine.deleteLinkSession(this.currentUid, sessionId);
+      }
+    }
+
+    showQrError(message) {
+      const box = document.getElementById("qr-error");
+      if (box) {
+        box.textContent = message;
+        box.classList.remove("hidden");
+      }
+      const status = document.getElementById("qr-status");
+      if (status) status.textContent = "";
+    }
+
+    stopQrSession({ keepModal = false } = {}) {
+      if (this.qrTicker) clearInterval(this.qrTicker);
+      this.qrTicker = null;
+
+      if (this.qrUnsubscribe) {
+        try { this.qrUnsubscribe(); } catch (e) { /* already detached */ }
+      }
+      this.qrUnsubscribe = null;
+
+      if (this.qrSession && this.currentUid) {
+        FirebaseSyncEngine.deleteLinkSession(this.currentUid, this.qrSession.sessionId);
+      }
+      this.qrSession = null;
+      this.qrConsuming = false;
+
+      if (!keepModal) this.closeModal("modal-qr-unlock");
+    }
+
     /**
      * Re-keys an already-unlocked vault onto the current KDF. Called right
      * after a successful unlock of a vault created by an older build, while
@@ -1583,6 +1968,7 @@
     }
 
     lockVault() {
+      this.stopQrSession();
       if (this.idleTimer) clearTimeout(this.idleTimer);
       this.idleTimer = null;
       this.aesKey = null;
@@ -2835,6 +3221,7 @@
       StorageController,
       FirebaseSyncEngine,
       PasswordHealthEngine,
+      LinkSessionEngine,
     };
     return instance;
   }

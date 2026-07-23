@@ -42,6 +42,7 @@ CipherVault-Android/
     app/src/main/java/com/ciphervault/app/
       MainActivity.java
       AppUpdaterPlugin.java   downloads + installs APK updates
+      BiometricPlugin.java    seals the master password behind BiometricPrompt
   scripts/sync-core.js
 ```
 
@@ -89,6 +90,40 @@ failing mysteriously.
 Signing out, switching account, resetting or destroying the vault all forget
 the sealed password — it belongs to one account's vault.
 
+### Unlock a PC by QR
+
+**Tools → Unlock a PC**, with the vault open on the phone. The desktop shows a
+QR code on its lock screen (*Unlock with my phone*); scan it, approve, and the
+computer unlocks.
+
+The protocol is in `LinkSessionEngine` and is worth understanding, because the
+master password has to cross between devices and the only channel they share is
+Firestore — which must never see it:
+
+1. The desktop generates an ephemeral ECDH P-256 keypair and displays the public
+   key in the QR code. The private key never leaves the desktop and is created
+   non-extractable.
+2. The phone generates its own pair, performs ECDH against the key it read off
+   the screen, and derives an AES-256-GCM key via HKDF salted with the session id.
+3. The phone encrypts the master password under that key and writes only the
+   ciphertext and its own public key.
+4. The desktop performs the same ECDH, decrypts, and then still has to satisfy
+   the stored verifier — a phone cannot force a vault open with the wrong
+   password.
+
+Firestore therefore holds two public keys and a ciphertext. Recovering anything
+from that is the ECDH problem. **The screen is the authenticated channel**: an
+attacker on the network cannot substitute the desktop's public key, because it
+reached the phone as pixels rather than over the wire.
+
+Sessions rotate every 45 seconds, are single-use, and the document is deleted
+the moment it is consumed. A photographed code is worthless — using it also
+requires being signed in to the account.
+
+What this does mean: anyone holding your unlocked phone can unlock your
+computers. That is inherent to the feature, the same as WhatsApp Web. The
+phone-side approval dialog exists so an accidental scan cannot do it silently.
+
 ### Backup
 
 **Settings → Backup → Export Vault** writes JSON and hands it to the Android
@@ -107,7 +142,8 @@ insets so nothing hides behind a notch or the gesture bar.
 
 ## Building locally
 
-Prerequisites: **JDK 21**, Android SDK with platform 36, Node 20+.
+Prerequisites: **JDK 21**, Android SDK with platform 36, Node 22+ (the
+Capacitor 8 CLI requires it). minSdk is 26 (Android 8.0).
 
 Two environment variables on this machine currently point at the wrong place
 and will break Gradle:
