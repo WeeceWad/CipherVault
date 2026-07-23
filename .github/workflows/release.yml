@@ -180,14 +180,8 @@ jobs:
         # electron-updater compares the running app's version against the one
         # in latest.yml, so the packaged app has to carry the tag's version.
         run: |
-          node -e "
-            const fs = require('fs');
-            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-            pkg.version = '${{ steps.version.outputs.name }}';
-            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '
-');
-            console.log('version ->', pkg.version);
-          "
+          npm pkg set version=${{ steps.version.outputs.name }}
+          node -p "'version -> ' + require('./package.json').version"
 
       - name: Build the installer
         working-directory: CipherVault-Desktop

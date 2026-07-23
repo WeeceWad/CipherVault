@@ -58,6 +58,31 @@ jobs:
           done
           exit $FAILED
 
+      - name: Workflows parse
+        # A malformed workflow does not fail loudly - GitHub shows the run under
+        # the raw filename with zero jobs, which is easy to mistake for "it did
+        # not need to run". That once let a broken release workflow through.
+        run: |
+          npm install --no-save --silent js-yaml
+          node -e "
+            const yaml = require('js-yaml');
+            const fs = require('fs');
+            let bad = 0;
+            for (const f of fs.readdirSync('.github/workflows')) {
+              if (!/\.ya?ml\$/.test(f)) continue;
+              try {
+                const doc = yaml.load(fs.readFileSync('.github/workflows/' + f, 'utf8'));
+                const jobs = Object.keys((doc && doc.jobs) || {});
+                if (jobs.length === 0) throw new Error('no jobs defined');
+                console.log('  ok    ' + f + '  [' + jobs.join(', ') + ']');
+              } catch (e) {
+                console.log('::error file=.github/workflows/' + f + '::' + (e.reason || e.message));
+                bad++;
+              }
+            }
+            process.exit(bad ? 1 : 0);
+          "
+
       - name: Manifests parse
         run: |
           node -e "JSON.parse(require('fs').readFileSync('CipherVault-Extension/manifest.json','utf8'))" && echo "  ok    extension manifest"
