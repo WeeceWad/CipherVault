@@ -1,10 +1,26 @@
 # CipherVault
 
-A zero-knowledge password manager in three parts that share one vault:
+A zero-knowledge password manager across four platforms, sharing one vault.
+
+**Download:**
+
+| Platform | |
+| --- | --- |
+| Windows | [CipherVault-Setup.exe](https://github.com/WeeceWad/CipherVault/releases/latest/download/CipherVault-Setup.exe) |
+| Android | [CipherVault.apk](https://github.com/WeeceWad/CipherVault/releases/latest/download/CipherVault.apk) |
+| Web | https://weecewad.github.io/CipherVault/ |
+| Firefox / Chrome | load `CipherVault-Extension/` unpacked (below) |
+
+The desktop and Android apps update themselves from GitHub Releases —
+**Settings → Check for Updates**.
+
+---
+
+The four parts:
 
 | Folder | What it is | How you run it |
 | --- | --- | --- |
-| `CipherVault/` | The web app | `start-web.bat`, or `node _devserver.js web` |
+| `CipherVault/` | The web app (deployed to Pages) | `start-web.bat`, or `node _devserver.js web` |
 | `CipherVault-Desktop/` | The same app wrapped in Electron | `cd CipherVault-Desktop && npm start` |
 | `CipherVault-Extension/` | Firefox/Chrome popup + autofill | Load as a temporary add-on (below) |
 | `CipherVault-Android/` | Capacitor app, self-updating from GitHub | See [README-ANDROID.md](README-ANDROID.md) |
