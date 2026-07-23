@@ -5,10 +5,11 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "test": "electron test/e2e.js && electron test/qr.js && electron test/qr-ui.js",
+    "test": "electron test/e2e.js && electron test/qr.js && electron test/qr-ui.js && electron test/bridge.js",
     "build": "electron-builder --win",
     "test:vault": "electron test/e2e.js",
-    "test:qr": "electron test/qr.js && electron test/qr-ui.js"
+    "test:qr": "electron test/qr.js && electron test/qr-ui.js",
+    "test:bridge": "electron test/bridge.js"
   },
   "author": "",
   "license": "ISC",
@@ -21,6 +22,7 @@
     "productName": "CipherVault",
     "files": [
       "main.js",
+      "preload.js",
       "index.html",
       "css/**/*",
       "js/**/*",
@@ -29,11 +31,24 @@
       "!dist/**/*"
     ],
     "win": {
-      "target": "nsis"
+      "target": [
+        "nsis"
+      ]
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
-    }
+    },
+    "artifactName": "CipherVault-Setup.${ext}",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "WeeceWad",
+        "repo": "CipherVault"
+      }
+    ]
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
   }
 }

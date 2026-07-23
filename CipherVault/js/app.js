@@ -916,6 +916,7 @@
       FirebaseSyncEngine.init();
       this.setupFirebaseSync();
       this.startTotpInterval();
+      this.setupDesktopUpdates();
 
       // Firebase restores a persisted session asynchronously. Show the correct
       // screen straight away for the offline case; onAuthStateChanged will
@@ -1756,6 +1757,126 @@
       } finally {
         if (unlockBtn) unlockBtn.disabled = false;
       }
+    }
+
+    // ---------------------------------------------------------------------
+    // Desktop auto-update
+    //
+    // Only wired up when running inside the Electron shell, which exposes a
+    // narrow bridge (see CipherVault-Desktop/preload.js). The browser build
+    // has no installer to replace, so the whole section stays hidden there.
+    // ---------------------------------------------------------------------
+
+    get desktopBridge() {
+      return (typeof window !== "undefined" && window.cipherVaultDesktop) || null;
+    }
+
+    async setupDesktopUpdates() {
+      const bridge = this.desktopBridge;
+      const section = document.getElementById("settings-section-updates");
+      if (!bridge || !section) return;
+
+      section.classList.remove("hidden");
+
+      const versionLabel = document.getElementById("setting-app-version");
+      const status = document.getElementById("setting-update-status");
+      const button = document.getElementById("btn-check-updates");
+      const track = document.getElementById("update-progress-track");
+      const bar = document.getElementById("update-progress-bar");
+
+      try {
+        const version = await bridge.getVersion();
+        this.desktopVersion = version;
+        if (versionLabel) versionLabel.textContent = `v${version}`;
+      } catch (e) {
+        if (versionLabel) versionLabel.textContent = "unknown";
+      }
+
+      bridge.update.on((event, payload) => {
+        switch (event) {
+          case "checking":
+            status.textContent = "Checking GitHub…";
+            break;
+
+          case "available":
+            track.classList.add("hidden");
+            status.textContent = `Version ${payload.version} is available.`;
+            this.promptDesktopUpdate(payload);
+            break;
+
+          case "not-available":
+            status.textContent = "You're on the latest version.";
+            break;
+
+          case "progress":
+            track.classList.remove("hidden");
+            bar.style.width = `${payload.percent}%`;
+            status.textContent = `Downloading… ${payload.percent}%`;
+            break;
+
+          case "downloaded":
+            track.classList.add("hidden");
+            status.textContent = `Version ${payload.version} is ready to install.`;
+            this.promptDesktopRestart(payload);
+            break;
+
+          case "error":
+            track.classList.add("hidden");
+            status.textContent = payload.message || "Update failed.";
+            break;
+        }
+      });
+
+      if (button) {
+        button.addEventListener("click", async () => {
+          button.disabled = true;
+          status.textContent = "Checking GitHub…";
+          const result = await bridge.update.check();
+
+          if (result.status === "up-to-date") {
+            status.textContent = `You're on the latest version (v${result.version || this.desktopVersion}).`;
+            this.showToast("CipherVault is up to date.");
+          } else if (result.status === "dev") {
+            status.textContent = result.message;
+          } else if (result.status === "error") {
+            status.textContent = result.message;
+          }
+          button.disabled = false;
+        });
+      }
+
+      // A quiet check on launch, at most once every six hours.
+      const LAST_CHECK = "cv:desktop:last_update_check";
+      const since = Date.now() - parseInt(localStorage.getItem(LAST_CHECK) || "0", 10);
+      if (since > 6 * 60 * 60 * 1000) {
+        localStorage.setItem(LAST_CHECK, String(Date.now()));
+        setTimeout(() => bridge.update.check(), 4000);
+      }
+    }
+
+    promptDesktopUpdate(info) {
+      if (this.updatePromptOpen) return;
+      this.updatePromptOpen = true;
+
+      const notes = (info.notes || "").trim();
+      const message =
+        `CipherVault ${info.version} is available (you have v${this.desktopVersion}).` +
+        (notes ? `\n\n${notes.slice(0, 600)}` : "") +
+        `\n\nDownload it now? Your vault stays exactly as it is.`;
+
+      if (confirm(message)) {
+        this.showToast("Downloading update…");
+        this.desktopBridge.update.download();
+      }
+      this.updatePromptOpen = false;
+    }
+
+    promptDesktopRestart(info) {
+      const ok = confirm(
+        `CipherVault ${info.version} has downloaded.\n\n` +
+        `Restart now to install it? Your vault will be locked and you'll unlock it again afterwards.`
+      );
+      if (ok) this.desktopBridge.update.install();
     }
 
     // ---------------------------------------------------------------------

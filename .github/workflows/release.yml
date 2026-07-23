@@ -1,11 +1,13 @@
-name: Android Release
+name: Release
 
 # Tag a version to ship it:
 #   git tag v1.0.0 && git push origin v1.0.0
 #
-# This builds a signed APK and publishes it as a GitHub Release. The app's
-# in-app updater reads that release, so the asset name must stay stable:
-# https://github.com/WeeceWad/CipherVault/releases/latest/download/CipherVault.apk
+# Builds the signed Android APK and the Windows desktop installer, then
+# publishes both to one GitHub Release. Both in-app updaters read that release,
+# so the asset names must stay stable:
+#   .../releases/latest/download/CipherVault.apk
+#   .../releases/latest/download/CipherVault-Setup.exe
 
 on:
   push:
@@ -21,7 +23,7 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  android:
     runs-on: ubuntu-latest
 
     steps:
@@ -136,6 +138,110 @@ jobs:
         working-directory: CipherVault-Android/android
         run: rm -f ciphervault.keystore keystore.properties
 
+      - name: Hand the APK to the release job
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: dist/CipherVault.apk
+          retention-days: 1
+
+  desktop:
+    # Must be Windows: electron-builder produces the NSIS installer natively.
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Work out the version
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          VERSION="${VERSION#v}"
+          echo "name=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        working-directory: CipherVault-Desktop
+        run: npm ci
+
+      - name: Stamp the version into package.json
+        working-directory: CipherVault-Desktop
+        shell: bash
+        # electron-updater compares the running app's version against the one
+        # in latest.yml, so the packaged app has to carry the tag's version.
+        run: |
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            pkg.version = '${{ steps.version.outputs.name }}';
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '
+');
+            console.log('version ->', pkg.version);
+          "
+
+      - name: Build the installer
+        working-directory: CipherVault-Desktop
+        # --publish never: the release job below attaches everything at once,
+        # so the two platforms cannot race to create the release.
+        run: npx electron-builder --win --publish never
+
+      - name: Collect the installer and update manifest
+        working-directory: CipherVault-Desktop
+        shell: bash
+        run: |
+          ls -la dist/
+          test -f "dist/CipherVault-Setup.exe" || { echo "::error::No installer produced"; exit 1; }
+          test -f "dist/latest.yml" || { echo "::error::No latest.yml - auto-update would not work"; exit 1; }
+
+      - name: Hand the installer to the release job
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-installer
+          path: |
+            CipherVault-Desktop/dist/CipherVault-Setup.exe
+            CipherVault-Desktop/dist/CipherVault-Setup.exe.blockmap
+            CipherVault-Desktop/dist/latest.yml
+          retention-days: 1
+
+  release:
+    needs: [android, desktop]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Work out the version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "name=${VERSION#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Collect both builds
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Lay the assets out
+        run: |
+          mkdir -p release
+          cp artifacts/android-apk/CipherVault.apk release/
+          cp artifacts/desktop-installer/CipherVault-Setup.exe release/
+          cp artifacts/desktop-installer/CipherVault-Setup.exe.blockmap release/ 2>/dev/null || true
+          cp artifacts/desktop-installer/latest.yml release/
+          ls -la release/
+
       - name: Publish the release
         uses: softprops/action-gh-release@v2
         with:
@@ -144,22 +250,27 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
-          files: dist/CipherVault.apk
+          files: |
+            release/CipherVault.apk
+            release/CipherVault-Setup.exe
+            release/CipherVault-Setup.exe.blockmap
+            release/latest.yml
           body: |
             ## CipherVault v${{ steps.version.outputs.name }}
 
-            **Android** — download `CipherVault.apk` below, or let the app update
-            itself: Settings → Check for Updates.
+            | Platform | Download |
+            | --- | --- |
+            | **Windows** | [`CipherVault-Setup.exe`](https://github.com/WeeceWad/CipherVault/releases/latest/download/CipherVault-Setup.exe) |
+            | **Android** | [`CipherVault.apk`](https://github.com/WeeceWad/CipherVault/releases/latest/download/CipherVault.apk) |
+            | **Web** | https://weecewad.github.io/CipherVault/ |
+
+            Both apps update themselves — **Settings → Check for Updates**.
 
             Installing over an existing copy keeps your vault. If Android refuses
-            the install, the APK was signed with a different key — uninstall first,
+            the install, the APK was signed with a different key: uninstall first,
             then sign in again to restore from the cloud.
 
-            <!-- Release notes are appended automatically from the commits. -->
+            `latest.yml` is the desktop update manifest. Ignore it unless you're
+            curious; the app reads it for you.
 
-      - name: Upload the APK as a build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: CipherVault-${{ steps.version.outputs.name }}-apk
-          path: dist/CipherVault.apk
-          retention-days: 30
+            <!-- Release notes are appended automatically from the commits. -->

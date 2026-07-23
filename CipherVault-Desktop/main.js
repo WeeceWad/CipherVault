@@ -1,6 +1,7 @@
-const { app, BrowserWindow, protocol, net, shell } = require('electron');
+const { app, BrowserWindow, protocol, net, shell, ipcMain } = require('electron');
 const path = require('path');
 const { pathToFileURL } = require('url');
+const { autoUpdater } = require('electron-updater');
 
 /**
  * The renderer is NOT loaded with `win.loadFile()` any more.
@@ -113,6 +114,91 @@ function registerAppProtocol() {
   });
 }
 
+/**
+ * Auto-update from GitHub Releases.
+ *
+ * electron-updater reads `latest.yml` from the release published by the
+ * release workflow, checks the installer's hash against it, and hands the NSIS
+ * package to Windows. Downloading is never automatic: the renderer asks, so an
+ * update can't start pulling ~100 MB while somebody is mid-task, and an
+ * unlocked vault is never quit out from under the user.
+ */
+function setupAutoUpdater() {
+  // Registered once for the process: ipcMain.handle throws on a duplicate
+  // channel, and createWindow can run again (macOS dock activate).
+  if (!app.isPackaged) {
+    ipcMain.handle('update:check', async () => ({
+      status: 'dev',
+      message: 'Updates are only available in the installed app.',
+    }));
+    ipcMain.handle('update:download', async () => ({ status: 'dev' }));
+    ipcMain.handle('update:install', async () => ({ status: 'dev' }));
+    return;
+  }
+
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = false;
+  autoUpdater.logger = null;
+
+  // Resolved at emit time rather than captured, so events still reach the
+  // window even if it was recreated after this ran.
+  const send = (name, payload) => {
+    const target = BrowserWindow.getAllWindows()[0];
+    if (target && !target.isDestroyed()) target.webContents.send(`update:${name}`, payload);
+  };
+
+  autoUpdater.on('checking-for-update', () => send('checking', {}));
+  autoUpdater.on('update-available', (info) => send('available', {
+    version: info.version,
+    notes: typeof info.releaseNotes === 'string' ? info.releaseNotes : '',
+    date: info.releaseDate,
+  }));
+  autoUpdater.on('update-not-available', (info) => send('not-available', { version: info.version }));
+  autoUpdater.on('download-progress', (p) => send('progress', {
+    percent: Math.round(p.percent || 0),
+    transferred: p.transferred,
+    total: p.total,
+  }));
+  autoUpdater.on('update-downloaded', (info) => send('downloaded', { version: info.version }));
+  autoUpdater.on('error', (err) => send('error', {
+    message: (err && err.message) || 'Update failed.',
+  }));
+
+  ipcMain.handle('update:check', async () => {
+    try {
+      const result = await autoUpdater.checkForUpdates();
+      if (!result || !result.updateInfo) return { status: 'up-to-date' };
+
+      const latest = result.updateInfo.version;
+      if (latest === app.getVersion()) return { status: 'up-to-date', version: latest };
+
+      return {
+        status: 'available',
+        version: latest,
+        notes: typeof result.updateInfo.releaseNotes === 'string' ? result.updateInfo.releaseNotes : '',
+      };
+    } catch (err) {
+      return { status: 'error', message: (err && err.message) || 'Could not reach GitHub.' };
+    }
+  });
+
+  ipcMain.handle('update:download', async () => {
+    try {
+      await autoUpdater.downloadUpdate();
+      return { status: 'downloading' };
+    } catch (err) {
+      return { status: 'error', message: (err && err.message) || 'Download failed.' };
+    }
+  });
+
+  ipcMain.handle('update:install', async () => {
+    // isSilent false so the user sees the installer; isForceRunAfter true so
+    // the app comes back up afterwards.
+    setImmediate(() => autoUpdater.quitAndInstall(false, true));
+    return { status: 'installing' };
+  });
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1280,
@@ -124,6 +210,7 @@ function createWindow() {
     backgroundColor: '#0f172a',
     title: 'CipherVault',
     webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
@@ -181,8 +268,20 @@ if (!gotTheLock) {
     }
   });
 
+  // app.getVersion() reports Electron's own version when running unpackaged,
+  // which would show as "v43.2.0" in Settings during development. Prefer the
+  // app's declared version and fall back only if that is somehow missing.
+  ipcMain.handle('app:get-version', () => {
+    try {
+      const declared = require('./package.json').version;
+      if (declared) return declared;
+    } catch (e) { /* packaged asar without package.json access */ }
+    return app.getVersion();
+  });
+
   app.whenReady().then(() => {
     registerAppProtocol();
+    setupAutoUpdater();
     mainWindow = createWindow();
 
     app.on('activate', () => {

@@ -1,0 +1,71 @@
+name: Deploy Web App
+
+# Publishes CipherVault/ to GitHub Pages:
+#   https://weecewad.github.io/CipherVault/
+#
+# The web app is the same vault as the desktop and Android builds - it signs in
+# to the same account and decrypts locally in the browser. Nothing is rendered
+# server-side and there is no backend here; Pages only serves static files.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'CipherVault/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never run two deploys at once, but let a newer commit supersede a queued one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Sanity-check what we're about to publish
+        run: |
+          test -f CipherVault/index.html || { echo "::error::No index.html"; exit 1; }
+          test -f CipherVault/js/app.js  || { echo "::error::No app.js"; exit 1; }
+          test -f CipherVault/lib/qrcode.js || { echo "::error::No qrcode.js"; exit 1; }
+
+          # The web build must not accidentally ship anything private. The
+          # Firebase apiKey is a public project identifier and is expected.
+          if grep -rIl --exclude-dir=lib -e 'BEGIN PRIVATE KEY' -e 'BEGIN RSA' CipherVault/; then
+            echo "::error::Private key material found in the web build"
+            exit 1
+          fi
+
+          echo "Publishing:"
+          find CipherVault -type f | sort
+
+      - name: Add a no-Jekyll marker
+        # Without this, Pages runs Jekyll and silently drops files starting with
+        # an underscore. Nothing here does today, but this removes the trap.
+        run: touch CipherVault/.nojekyll
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload the site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: CipherVault
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -703,6 +703,28 @@
           </div>
         </div>
 
+        <!-- Section: Desktop updates (hidden in the browser build) -->
+        <div class="settings-section hidden" id="settings-section-updates">
+          <h4>App Updates</h4>
+          <div class="settings-card">
+            <div class="setting-row">
+              <div class="setting-meta">
+                <span class="setting-title">Installed version</span>
+                <span class="setting-desc" id="setting-app-version">—</span>
+              </div>
+              <button class="btn-secondary-sm" id="btn-check-updates">Check for Updates</button>
+            </div>
+            <div class="setting-row">
+              <div class="setting-meta" style="width:100%;">
+                <span class="setting-desc" id="setting-update-status">Updates are downloaded from GitHub Releases.</span>
+                <div id="update-progress-track" class="hidden" style="height:4px; margin-top:10px; background:var(--bg-input); border-radius:999px; overflow:hidden;">
+                  <div id="update-progress-bar" style="height:100%; width:0; background:var(--text-secondary); border-radius:999px; transition:width .2s;"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- Section 2: Security & Clipboard -->
         <div class="settings-section">
           <h4>Security & Automation</h4>
