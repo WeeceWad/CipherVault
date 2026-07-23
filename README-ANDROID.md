@@ -50,11 +50,56 @@ CipherVault-Android/
 Three tabs along the bottom:
 
 - **Vault** — search, horizontally scrolling category chips (All, Favourites,
-  Logins, Passkeys, Notes, Cards, Identity, Trash), and a `+` button. Tapping an
-  item opens a full-screen detail sheet; secrets are masked until you tap Show.
+  Logins, Passkeys, Notes, Cards, Identity, Trash), then your folders, then a
+  dashed **＋ Folder** chip. A `+` button adds items. Tapping an item opens a
+  full-screen detail sheet; secrets are masked until you tap Show.
 - **Tools** — Password Generator, Email Masking (SimpleLogin), Password Health,
   Breach Scanner.
-- **Settings** — account, updates, auto-lock, clipboard, integrations, danger zone.
+- **Settings** — account, updates, biometrics, auto-lock, clipboard,
+  integrations, backup, danger zone.
+
+### Folders
+
+Folder chips sit after the fixed categories, each showing how many items it
+holds. **Long-press** a folder chip to rename or delete it — deleting keeps the
+items and just moves them back to All.
+
+The item editor has a folder picker with an inline **+ New folder…** option, so
+you can file something without leaving the editor. Adding an item while viewing
+a folder files it there by default.
+
+### Biometric unlock
+
+Off until you turn it on, either from the prompt after your first unlock or
+Settings → Biometric Unlock. Enabling asks for your master password again,
+because that is the moment it gets sealed.
+
+The master password is encrypted with an AES key in the AndroidKeyStore created
+with `setUserAuthenticationRequired(true)`. The key physically cannot decrypt
+anything until a biometric prompt has passed — only the ciphertext and IV go
+into SharedPreferences, and on their own they are useless even to somebody with
+root.
+
+`setInvalidatedByBiometricEnrollment(true)` means the key is destroyed the
+moment a new fingerprint or face is enrolled. Somebody adding their own
+biometric to your unlocked phone must not thereby gain access to your vault, so
+that case falls back to the master password with an explanation rather than
+failing mysteriously.
+
+Signing out, switching account, resetting or destroying the vault all forget
+the sealed password — it belongs to one account's vault.
+
+### Backup
+
+**Settings → Backup → Export Vault** writes JSON and hands it to the Android
+share sheet, so you choose where it lands. **Import from JSON** opens the system
+file picker and merges into your existing vault; nothing is overwritten or
+removed. Folders come across too, and any item pointing at a folder that isn't
+in the file gets its folder cleared rather than dangling.
+
+The export is deliberately **plaintext** so it can be read by other password
+managers, which is why it asks first in blunt terms. Delete the file when
+you're done with it.
 
 Same monochrome dark palette as the desktop app, with 48dp touch targets, 16px
 inputs (anything smaller makes Android zoom the viewport on focus), and safe-area
@@ -211,6 +256,3 @@ the installed app is rejected by the system.
   native `AutofillService`, which is a separate Kotlin component with its own
   bridge to the decrypted vault. Copy-to-clipboard works now, with the same
   auto-clear timer as the desktop.
-- **Biometric unlock.** Would mean storing the derived key in the Android
-  Keystore behind a biometric prompt. Worth doing, but it changes where key
-  material lives, so it deserves its own pass rather than being bolted on.

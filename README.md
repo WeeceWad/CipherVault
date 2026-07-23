@@ -138,8 +138,8 @@ npm test
 
 This boots the real Electron window and drives the real UI: account creation,
 master password rules, add/lock/unlock round-trip, wrong-password rejection,
-per-account isolation, legacy vault migration, auto-lock, trash filtering.
-52 checks.
+per-account isolation, legacy vault migration, auto-lock, trash filtering, and
+the encrypted SimpleLogin key. 61 checks.
 
 Cross-platform key derivation:
 
@@ -171,6 +171,5 @@ node scripts/check-parity.js
 
 - **Sync is last-write-wins.** Editing the same vault on two devices while both
   are online can lose the earlier edit. There is no merge.
-- The SimpleLogin API key is stored unencrypted in localStorage.
 - Passkey items store metadata only; they are notes about a passkey, not usable
   WebAuthn credentials.
