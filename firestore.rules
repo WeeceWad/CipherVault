@@ -34,6 +34,9 @@ service cloud.firestore {
       && data.hash is string
       && data.salt.size() > 0
       && data.hash.size() > 0
+      // slKeyEnc is the SimpleLogin API key, encrypted client-side with the
+      // vault key. Optional, since vaults written before v1.1 lack it.
+      && (!('slKeyEnc' in data.keys()) || data.slKeyEnc is string)
       // Firestore caps a document at 1 MiB; reject anything near that so a
       // runaway client can't wedge the account into an unwritable state.
       && data.vault.size() <= 5000;

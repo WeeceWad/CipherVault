@@ -310,19 +310,21 @@
       await firebase.auth().sendPasswordResetEmail(email);
     }
 
-    static async uploadVault(uid, { vault, folders, salt, hash, kdf }) {
+    static async uploadVault(uid, { vault, folders, salt, hash, kdf, slKeyEnc }) {
       if (typeof firebase === 'undefined') throw new Error("Firebase SDK not loaded.");
       if (!uid) throw new Error("Not signed in.");
       if (!salt || !hash) throw new Error("Refusing to sync a vault with no master key material.");
 
       const db = firebase.firestore();
       await db.collection("users").doc(uid).set({
-        schemaVersion: 2,
+        schemaVersion: 3,
         vault: Array.isArray(vault) ? vault : [],
         folders: Array.isArray(folders) ? folders : [],
         salt: salt,
         hash: hash,
         kdf: kdf || { v: 1, iterations: 100000 },
+        // Encrypted with the vault key, so the server never sees the API key.
+        slKeyEnc: typeof slKeyEnc === "string" ? slKeyEnc : "",
         updatedAtMs: Date.now(),
         lastSynced: firebase.firestore.FieldValue.serverTimestamp()
       });
@@ -349,6 +351,7 @@
         salt: typeof data.salt === "string" ? data.salt : null,
         hash: typeof data.hash === "string" ? data.hash : null,
         kdf: data.kdf && typeof data.kdf.v === "number" ? data.kdf : { v: 1, iterations: 100000 },
+        slKeyEnc: typeof data.slKeyEnc === "string" ? data.slKeyEnc : "",
         updatedAtMs: typeof data.updatedAtMs === "number" ? data.updatedAtMs : 0,
         // A document only counts as a real vault once it carries key material.
         isProvisioned: typeof data.salt === "string" && typeof data.hash === "string",
@@ -404,6 +407,7 @@
           kdf: this.getKdf(),
           items: this.getEncryptedItems(),
           folders: this.getFolders(),
+          slKeyEnc: this.getSimpleLoginKeyEnc(),
         };
       } finally {
         this._scope = previous;
@@ -486,8 +490,26 @@
       this._set("items", JSON.stringify(Array.isArray(itemsList) ? itemsList : []));
     }
 
-    static getSimpleLoginKey() { return this._get("sl_key") || ""; }
-    static setSimpleLoginKey(key) { this._set("sl_key", key); }
+    /**
+     * SimpleLogin API key.
+     *
+     * Held as a blob encrypted with the vault key, so it syncs between devices
+     * through the same Firestore document as everything else and is never at
+     * rest in the clear. It used to sit in localStorage as plaintext, readable
+     * by anything with access to the profile - and it grants full control of
+     * the user's aliases.
+     *
+     * `sl_key` (plaintext) is only still read so an existing one can be
+     * migrated on the next unlock; see CipherVaultApp.migrateSimpleLoginKey.
+     */
+    static getLegacySimpleLoginKey() { return this._get("sl_key") || ""; }
+    static clearLegacySimpleLoginKey() { this._del("sl_key"); }
+
+    static getSimpleLoginKeyEnc() { return this._get("sl_key_enc") || ""; }
+    static setSimpleLoginKeyEnc(blob) {
+      if (blob) this._set("sl_key_enc", blob);
+      else this._del("sl_key_enc");
+    }
 
     /** Clipboard timeout is a device preference, so it stays outside the scope. */
     static getClipboardDelay() {
@@ -521,7 +543,7 @@
 
     /** Wipes every trace of the currently scoped vault from this device. */
     static wipeScope() {
-      ["salt", "hash", "kdf", "items", "sl_key", "folders"].forEach((n) => this._del(n));
+      ["salt", "hash", "kdf", "items", "sl_key", "sl_key_enc", "folders"].forEach((n) => this._del(n));
     }
 
     static getLocalChoice() { return localStorage.getItem("cv:local_choice") === "true"; }
@@ -686,6 +708,8 @@
       this.firebaseUser = null;
       this.currentUid = null;
       this.authResolved = false;
+      // Only ever populated while the vault is unlocked.
+      this.simpleLoginKey = "";
 
       this.init();
     }
@@ -741,6 +765,7 @@
           // storage at the new account's namespace before touching anything.
           this.aesKey = null;
           this.decryptedVault = [];
+          this.simpleLoginKey = "";
           this.selectedItemId = null;
           this.editingItemId = null;
           StorageController.setScope(newUid);
@@ -881,6 +906,7 @@
         StorageController.setKdf(cloud.kdf);
         StorageController.saveEncryptedItems(cloud.vault);
         StorageController.setFolders(cloud.folders);
+        StorageController.setSimpleLoginKeyEnc(cloud.slKeyEnc);
         this.folders = cloud.folders;
 
         // The master password behind the cached key no longer matches the cloud
@@ -888,6 +914,7 @@
         if (keyMaterialChanged && this.aesKey) {
           this.aesKey = null;
           this.decryptedVault = [];
+          this.simpleLoginKey = "";
           this.showLockScreen();
         }
 
@@ -912,7 +939,7 @@
         );
         if (ok) {
           // Copy the offline namespace into this account's namespace.
-          const { salt, hash, kdf, items, folders } =
+          const { salt, hash, kdf, items, folders, slKeyEnc } =
             StorageController.readScope(StorageController.SCOPE_LOCAL);
 
           StorageController.setSalt(salt);
@@ -920,11 +947,12 @@
           StorageController.setKdf(kdf);
           StorageController.saveEncryptedItems(items);
           StorageController.setFolders(folders);
+          StorageController.setSimpleLoginKeyEnc(slKeyEnc);
           this.folders = folders;
           this.renderFoldersList();
 
           try {
-            await FirebaseSyncEngine.uploadVault(uid, { vault: items, folders, salt, hash, kdf });
+            await FirebaseSyncEngine.uploadVault(uid, { vault: items, folders, salt, hash, kdf, slKeyEnc });
             this.showToast("Offline vault linked to your account.");
           } catch (err) {
             console.error("Failed to upload adopted vault:", err);
@@ -1148,7 +1176,7 @@
             if (this.currentUid) {
               try {
                 await FirebaseSyncEngine.uploadVault(this.currentUid, {
-                  vault: [], folders: [], salt, hash, kdf,
+                  vault: [], folders: [], salt, hash, kdf, slKeyEnc: "",
                 });
               } catch (err) {
                 console.error("Failed to provision cloud vault:", err);
@@ -1280,10 +1308,9 @@
 
       const btnSaveSettingSl = document.getElementById("btn-save-setting-sl");
       if (btnSaveSettingSl) {
-        btnSaveSettingSl.addEventListener("click", () => {
+        btnSaveSettingSl.addEventListener("click", async () => {
           const val = document.getElementById("setting-sl-key-input").value.trim();
-          StorageController.setSimpleLoginKey(val);
-          this.showToast("SimpleLogin API Key updated!");
+          await this.saveSimpleLoginKey(val);
           if (!document.getElementById("view-simplelogin-tool").classList.contains("hidden")) {
             this.loadSimpleLoginAliases();
           }
@@ -1409,10 +1436,9 @@
 
       const btnSaveSl = document.getElementById("btn-tool-save-sl");
       if (btnSaveSl) {
-        btnSaveSl.addEventListener("click", () => {
+        btnSaveSl.addEventListener("click", async () => {
           const key = document.getElementById("tool-sl-api-key").value.trim();
-          StorageController.setSimpleLoginKey(key);
-          this.showToast("SimpleLogin API Key saved!");
+          await this.saveSimpleLoginKey(key);
           this.loadSimpleLoginAliases();
         });
       }
@@ -1475,7 +1501,7 @@
       const modal = document.getElementById("modal-settings");
       if (modal) {
         modal.classList.remove("hidden");
-        document.getElementById("setting-sl-key-input").value = StorageController.getSimpleLoginKey();
+        document.getElementById("setting-sl-key-input").value = this.getSimpleLoginKey();
         document.getElementById("setting-clear-clipboard-select").value = StorageController.getClipboardDelay();
         const autoLock = document.getElementById("setting-auto-lock-select");
         if (autoLock) autoLock.value = StorageController.getAutoLockMinutes();
@@ -1561,6 +1587,7 @@
       this.idleTimer = null;
       this.aesKey = null;
       this.decryptedVault = [];
+      this.simpleLoginKey = "";
       this.selectedItemId = null;
       this.editingItemId = null;
       this.renderList();
@@ -1599,10 +1626,71 @@
 
       this.decryptedVault = decrypted;
       this.folders = StorageController.getFolders();
+      await this.loadSimpleLoginKey();
       this.renderFoldersList();
       this.renderList();
       if (!keepView) this.showView("detail-watermark");
       return failed;
+    }
+
+    // ---------------------------------------------------------------------
+    // SimpleLogin API key
+    //
+    // Kept in memory while unlocked, encrypted with the vault key at rest, and
+    // carried in the synced document so it follows the account rather than
+    // having to be re-entered on every device.
+    // ---------------------------------------------------------------------
+
+    async loadSimpleLoginKey() {
+      this.simpleLoginKey = "";
+      if (!this.aesKey) return;
+
+      const blob = StorageController.getSimpleLoginKeyEnc();
+      if (blob) {
+        try {
+          this.simpleLoginKey = await CryptoEngine.decrypt(blob, this.aesKey);
+        } catch (err) {
+          console.warn("Could not decrypt the stored SimpleLogin key.", err);
+          this.simpleLoginKey = "";
+        }
+      }
+
+      await this.migrateSimpleLoginKey();
+    }
+
+    /** Moves a pre-1.1 plaintext key into the encrypted store, once. */
+    async migrateSimpleLoginKey() {
+      const legacy = StorageController.getLegacySimpleLoginKey();
+      if (!legacy) return;
+
+      if (!this.simpleLoginKey) {
+        this.simpleLoginKey = legacy;
+        await this.saveSimpleLoginKey(legacy, { silent: true });
+      }
+      StorageController.clearLegacySimpleLoginKey();
+    }
+
+    async saveSimpleLoginKey(key, { silent = false } = {}) {
+      if (!this.aesKey) {
+        this.showToast("Unlock your vault first.");
+        return;
+      }
+
+      this.simpleLoginKey = key || "";
+
+      const blob = this.simpleLoginKey
+        ? await CryptoEngine.encrypt(this.simpleLoginKey, this.aesKey)
+        : "";
+      StorageController.setSimpleLoginKeyEnc(blob);
+
+      await this.saveEncryptedVault();
+      if (!silent) {
+        this.showToast(key ? "SimpleLogin key saved and synced." : "SimpleLogin key removed.");
+      }
+    }
+
+    getSimpleLoginKey() {
+      return this.simpleLoginKey || "";
     }
 
     updateCategoryCounts() {
@@ -2112,7 +2200,7 @@
 
     async renderSimpleLoginTool() {
       this.showView("view-simplelogin-tool");
-      const key = StorageController.getSimpleLoginKey();
+      const key = this.getSimpleLoginKey();
       const msg = document.getElementById("tool-sl-alias-msg");
       
       const btnGen = document.getElementById("btn-tool-gen-alias");
@@ -2148,7 +2236,7 @@
     }
 
     async loadSimpleLoginAliases() {
-      const key = StorageController.getSimpleLoginKey();
+      const key = this.getSimpleLoginKey();
       const container = document.getElementById("tool-sl-aliases-list");
       if (!key) return;
 
@@ -2199,7 +2287,7 @@
     }
 
     async handleToolGenerateAlias() {
-      const key = StorageController.getSimpleLoginKey();
+      const key = this.getSimpleLoginKey();
       const msg = document.getElementById("tool-sl-alias-msg");
       if (!key) {
         alert("Please enter and save your SimpleLogin API Key in Settings first!");
@@ -2439,7 +2527,7 @@
         });
         
         // Load SimpleLogin aliases into dropdown
-        const key = StorageController.getSimpleLoginKey();
+        const key = this.getSimpleLoginKey();
         const aliasSelect = container.querySelector("#ed-alias-select");
         if (key && aliasSelect) {
           SimpleLoginClient.fetchAliases(key).then(aliases => {
@@ -2582,6 +2670,7 @@
             salt: StorageController.getSalt(),
             hash: StorageController.getMasterHash(),
             kdf: StorageController.getKdf(),
+            slKeyEnc: StorageController.getSimpleLoginKeyEnc(),
           });
         } catch (err) {
           console.error("Failed to upload to Firebase:", err);

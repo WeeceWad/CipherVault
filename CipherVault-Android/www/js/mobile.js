@@ -70,6 +70,8 @@
       this.aesKey = null;
       this.decryptedVault = [];
       this.folders = [];
+      // Only populated while unlocked; encrypted with the vault key at rest.
+      this.simpleLoginKey = '';
       this.firebaseUser = null;
       this.currentUid = null;
       this.activeCategory = 'all';
@@ -98,6 +100,7 @@
       this.startTotpTicker();
 
       await this.refreshVersionLabels();
+      await this.refreshBiometricState();
       this.checkVaultState();
 
       // Background update check, throttled to once every few hours.
@@ -284,14 +287,11 @@
         this.renderVault();
       });
 
-      document.querySelectorAll('#category-chips .chip').forEach((chip) => {
-        chip.addEventListener('click', () => {
-          document.querySelectorAll('#category-chips .chip').forEach((c) => c.classList.remove('active'));
-          chip.classList.add('active');
-          this.activeCategory = chip.dataset.category;
-          this.renderVault();
-        });
+      document.querySelectorAll('#category-chips .chip[data-category]').forEach((chip) => {
+        chip.addEventListener('click', () => this.selectCategory(chip.dataset.category));
       });
+
+      $('btn-new-folder').addEventListener('click', () => this.promptNewFolder());
 
       document.querySelectorAll('.tool-card').forEach((card) => {
         card.addEventListener('click', () => this.openTool(card.dataset.tool));
@@ -305,6 +305,344 @@
 
       ['touchstart', 'keydown', 'click'].forEach((evt) => {
         window.addEventListener(evt, () => this.resetIdleTimer(), { passive: true, capture: true });
+      });
+    }
+
+    // ---------------------------------------------------- biometric unlock
+    //
+    // The master password is sealed by an AndroidKeyStore key that requires a
+    // biometric to use (see BiometricPlugin.java). Nothing readable is stored
+    // here, and the master password is still what actually opens the vault -
+    // biometrics only retrieve it.
+
+    get biometrics() {
+      return (isNative && CapPlugins.BiometricAuth) || null;
+    }
+
+    async refreshBiometricState() {
+      const row = $('row-biometric');
+      const toggle = $('set-biometric');
+      const desc = $('set-biometric-desc');
+      const unlockBtn = $('btn-biometric-unlock');
+
+      if (!this.biometrics) {
+        row.hidden = true;
+        unlockBtn.classList.add('hidden');
+        this.biometricStatus = { available: false, enrolled: false };
+        return;
+      }
+
+      let status;
+      try {
+        status = await this.biometrics.isAvailable();
+      } catch (err) {
+        row.hidden = true;
+        unlockBtn.classList.add('hidden');
+        return;
+      }
+
+      this.biometricStatus = status;
+      row.hidden = false;
+      toggle.checked = !!status.enrolled;
+      toggle.disabled = !status.available;
+
+      desc.textContent = status.available
+        ? 'Unlock with your fingerprint instead of typing your master password'
+        : status.reason;
+
+      // Only offer the shortcut on the lock screen once it is actually set up.
+      unlockBtn.classList.toggle('hidden', !(status.available && status.enrolled));
+    }
+
+    async enableBiometrics(masterPassword) {
+      if (!this.biometrics) return false;
+      try {
+        await this.biometrics.enable({ secret: masterPassword });
+        this.toast('Biometric unlock enabled.');
+        await this.refreshBiometricState();
+        return true;
+      } catch (err) {
+        const code = (err && err.message) || '';
+        if (code === 'BIOMETRIC_CANCELLED') this.toast('Cancelled.');
+        else this.toast('Could not enable biometrics: ' + code);
+        await this.refreshBiometricState();
+        return false;
+      }
+    }
+
+    async disableBiometrics({ silent = false } = {}) {
+      if (!this.biometrics) return;
+      try {
+        await this.biometrics.disable();
+        if (!silent) this.toast('Biometric unlock turned off.');
+      } catch (err) {
+        console.error('Could not disable biometrics:', err);
+      }
+      await this.refreshBiometricState();
+    }
+
+    /**
+     * Offers biometric unlock once, after the first successful password unlock
+     * on a device that supports it. Declining is remembered so it never nags;
+     * Settings still has the toggle.
+     */
+    async maybeOfferBiometrics(masterPassword) {
+      if (!this.biometrics) return;
+      if (localStorage.getItem('cv:biometric:offered') === 'true') return;
+
+      const status = this.biometricStatus || {};
+      if (!status.available || status.enrolled) return;
+
+      localStorage.setItem('cv:biometric:offered', 'true');
+
+      this.dialog({
+        title: 'Use biometrics?',
+        icon: ICONS.shield,
+        body: 'Unlock CipherVault with your fingerprint instead of typing your master password each time. Your master password is sealed by your device’s secure hardware and never stored in readable form.',
+        actions: [
+          { label: 'Enable', style: 'btn-primary', onClick: () => this.enableBiometrics(masterPassword) },
+          { label: 'Not now', style: 'btn-ghost' },
+        ],
+      });
+    }
+
+    async unlockWithBiometrics() {
+      if (!this.biometrics) return;
+
+      const btn = $('btn-biometric-unlock');
+      btn.disabled = true;
+      this.hideMsg('unlock-error');
+
+      try {
+        const { secret } = await this.biometrics.unlock();
+        $('master-pass').value = secret;
+        await this.doUnlock();
+      } catch (err) {
+        const code = (err && err.message) || '';
+
+        if (code === 'BIOMETRIC_INVALIDATED') {
+          // A biometric was added or removed on the device since we sealed the
+          // secret, so the key is gone. Requiring the master password again is
+          // the correct outcome, not a bug.
+          await this.refreshBiometricState();
+          this.dialog({
+            title: 'Biometrics changed',
+            icon: ICONS.warn,
+            body: 'The fingerprints or face data on this device changed, so the saved unlock was discarded for safety. Enter your master password, then turn biometric unlock back on in Settings.',
+            actions: [{ label: 'OK', style: 'btn-primary' }],
+          });
+        } else if (code === 'BIOMETRIC_LOCKOUT') {
+          this.showMsg('unlock-error', 'Too many failed attempts. Use your master password.');
+        } else if (code !== 'BIOMETRIC_CANCELLED') {
+          this.showMsg('unlock-error', code || 'Biometric unlock failed.');
+        }
+      } finally {
+        btn.disabled = false;
+        $('master-pass').value = '';
+      }
+    }
+
+    // ------------------------------------------------- SimpleLogin API key
+    //
+    // Encrypted with the vault key and carried in the synced document, so
+    // entering it on the desktop makes it available on the phone too. It used
+    // to be plaintext localStorage, per device.
+
+    async loadSimpleLoginKey() {
+      this.simpleLoginKey = '';
+      if (!this.aesKey) return;
+
+      const blob = StorageController.getSimpleLoginKeyEnc();
+      if (blob) {
+        try {
+          this.simpleLoginKey = await CryptoEngine.decrypt(blob, this.aesKey);
+        } catch (err) {
+          console.warn('Could not decrypt the stored SimpleLogin key.', err);
+        }
+      }
+
+      // One-time migration off the old plaintext value.
+      const legacy = StorageController.getLegacySimpleLoginKey();
+      if (legacy) {
+        if (!this.simpleLoginKey) {
+          this.simpleLoginKey = legacy;
+          await this.saveSimpleLoginKey(legacy, { silent: true });
+        }
+        StorageController.clearLegacySimpleLoginKey();
+      }
+    }
+
+    async saveSimpleLoginKey(key, { silent = false } = {}) {
+      if (!this.aesKey) return this.toast('Unlock your vault first.');
+
+      this.simpleLoginKey = key || '';
+      const blob = this.simpleLoginKey
+        ? await CryptoEngine.encrypt(this.simpleLoginKey, this.aesKey)
+        : '';
+      StorageController.setSimpleLoginKeyEnc(blob);
+
+      await this.saveVault();
+      if (!silent) {
+        this.toast(key ? 'SimpleLogin key saved and synced.' : 'SimpleLogin key removed.');
+      }
+    }
+
+    getSimpleLoginKey() {
+      return this.simpleLoginKey || '';
+    }
+
+    // ------------------------------------------------------------- folders
+
+    selectCategory(category) {
+      this.activeCategory = category;
+      document.querySelectorAll('#category-chips .chip[data-category]').forEach((c) => {
+        c.classList.toggle('active', c.dataset.category === category);
+      });
+      this.renderVault();
+    }
+
+    /**
+     * Rebuilds the folder chips after the fixed categories. Kept in the same
+     * scrolling row so folders read as just another way to filter, which is
+     * how the desktop sidebar presents them.
+     */
+    renderFolderChips() {
+      const row = $('category-chips');
+      const divider = $('folder-divider');
+      const addBtn = $('btn-new-folder');
+
+      row.querySelectorAll('.chip-folder').forEach((c) => c.remove());
+      divider.hidden = this.folders.length === 0;
+
+      this.folders.forEach((folder) => {
+        const count = this.decryptedVault.filter(
+          (i) => !i.isTrashed && i.data && i.data.folderId === folder.id
+        ).length;
+
+        const chip = el('button', {
+          class: `chip chip-folder${this.activeCategory === folder.id ? ' active' : ''}`,
+          attrs: { 'data-category': folder.id },
+        }, [
+          el('span', { html: '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>', class: 'chip-folder-icon' }),
+          el('span', { text: folder.name }),
+          el('span', { class: 'chip-count', text: String(count) }),
+        ]);
+
+        chip.addEventListener('click', () => this.selectCategory(folder.id));
+
+        // Long-press to manage, since there is no room for a per-chip menu.
+        let holdTimer = null;
+        const startHold = () => {
+          holdTimer = setTimeout(() => {
+            holdTimer = null;
+            this.haptic();
+            this.manageFolder(folder);
+          }, 550);
+        };
+        const cancelHold = () => { if (holdTimer) clearTimeout(holdTimer); holdTimer = null; };
+        chip.addEventListener('touchstart', startHold, { passive: true });
+        chip.addEventListener('touchend', cancelHold);
+        chip.addEventListener('touchmove', cancelHold, { passive: true });
+        chip.addEventListener('contextmenu', (e) => { e.preventDefault(); this.manageFolder(folder); });
+
+        row.insertBefore(chip, addBtn);
+      });
+    }
+
+    /** Small text-entry dialog; window.prompt is unavailable in the WebView. */
+    askForText({ title, body, label, value = '', placeholder = '', confirmLabel = 'Save' }) {
+      return new Promise((resolve) => {
+        const input = el('input', { attrs: { type: 'text', placeholder, autocomplete: 'off' } });
+        input.value = value;
+
+        const wrap = el('div', { style: 'text-align:left;' }, [
+          body ? el('p', { class: 'row-desc', style: 'margin-bottom:12px;', text: body }) : null,
+          el('div', { class: 'field' }, [
+            label ? el('label', { text: label }) : null,
+            input,
+          ]),
+        ]);
+
+        this.dialog({
+          title,
+          body: wrap,
+          dismissible: false,
+          actions: [
+            { label: confirmLabel, style: 'btn-primary', onClick: () => resolve(input.value.trim()) },
+            { label: 'Cancel', style: 'btn-ghost', onClick: () => resolve(null) },
+          ],
+        });
+
+        setTimeout(() => input.focus(), 120);
+      });
+    }
+
+    async promptNewFolder() {
+      if (!this.aesKey) return this.toast('Unlock your vault first.');
+
+      const name = await this.askForText({
+        title: 'New Folder',
+        label: 'Folder name',
+        placeholder: 'e.g. Work',
+        confirmLabel: 'Create',
+      });
+      if (!name) return null;
+
+      const folder = { id: 'folder_' + Date.now(), name };
+      this.folders.push(folder);
+      await this.saveVault();
+      this.renderFolderChips();
+      this.toast(`Folder “${name}” created.`);
+      return folder;
+    }
+
+    async manageFolder(folder) {
+      this.dialog({
+        title: folder.name,
+        body: 'Rename this folder, or delete it. Deleting keeps the items inside and just removes them from the folder.',
+        actions: [
+          {
+            label: 'Rename',
+            style: 'btn-primary',
+            onClick: async () => {
+              const name = await this.askForText({
+                title: 'Rename Folder',
+                label: 'Folder name',
+                value: folder.name,
+              });
+              if (!name || name === folder.name) return;
+              folder.name = name;
+              await this.saveVault();
+              this.renderFolderChips();
+              this.toast('Folder renamed.');
+            },
+          },
+          {
+            label: 'Delete folder',
+            style: 'btn-danger',
+            onClick: async () => {
+              const ok = await this.confirm({
+                title: 'Delete folder?',
+                body: `“${folder.name}” will be removed. Items inside it stay in your vault and move back to All.`,
+                confirmLabel: 'Delete',
+                danger: true,
+              });
+              if (!ok) return;
+
+              this.folders = this.folders.filter((f) => f.id !== folder.id);
+              this.decryptedVault.forEach((i) => {
+                if (i.data && i.data.folderId === folder.id) i.data.folderId = '';
+              });
+              if (this.activeCategory === folder.id) this.activeCategory = 'all';
+
+              await this.saveVault();
+              this.selectCategory(this.activeCategory);
+              this.renderFolderChips();
+              this.toast('Folder deleted.');
+            },
+          },
+          { label: 'Cancel', style: 'btn-ghost' },
+        ],
       });
     }
 
@@ -366,6 +704,7 @@
         if (changed) {
           this.aesKey = null;
           this.decryptedVault = [];
+          this.simpleLoginKey = '';
           StorageController.setScope(newUid);
           this.folders = StorageController.getFolders();
           this.showLockScreen();
@@ -414,11 +753,13 @@
         StorageController.setKdf(cloud.kdf);
         StorageController.saveEncryptedItems(cloud.vault);
         StorageController.setFolders(cloud.folders);
+        StorageController.setSimpleLoginKeyEnc(cloud.slKeyEnc);
         this.folders = cloud.folders;
 
         if (changed && this.aesKey) {
           this.aesKey = null;
           this.decryptedVault = [];
+          this.simpleLoginKey = '';
           this.showLockScreen();
         }
         if (this.aesKey) await this.loadAndDecrypt();
@@ -439,7 +780,7 @@
         });
         if (!ok) return;
 
-        const { salt, hash, kdf, items, folders } =
+        const { salt, hash, kdf, items, folders, slKeyEnc } =
           StorageController.readScope(StorageController.SCOPE_LOCAL);
 
         StorageController.setSalt(salt);
@@ -447,10 +788,11 @@
         StorageController.setKdf(kdf);
         StorageController.saveEncryptedItems(items);
         StorageController.setFolders(folders);
+        StorageController.setSimpleLoginKeyEnc(slKeyEnc);
         this.folders = folders;
 
         try {
-          await FirebaseSyncEngine.uploadVault(uid, { vault: items, folders, salt, hash, kdf });
+          await FirebaseSyncEngine.uploadVault(uid, { vault: items, folders, salt, hash, kdf, slKeyEnc });
           this.toast('Vault linked to your account.');
         } catch (err) {
           console.error(err);
@@ -543,6 +885,8 @@
         this.checkVaultState();
       });
       $('btn-switch-account').addEventListener('click', async () => {
+        await this.disableBiometrics({ silent: true });
+        localStorage.removeItem('cv:biometric:offered');
         if (this.firebaseUser) await FirebaseSyncEngine.logout();
         StorageController.setLocalChoice(false);
         this.checkVaultState();
@@ -584,6 +928,7 @@
       $('unlock-pane').addEventListener('submit', (e) => { e.preventDefault(); this.doUnlock(); });
 
       $('btn-reset-vault').addEventListener('click', () => this.doResetVault());
+      $('btn-biometric-unlock').addEventListener('click', () => this.unlockWithBiometrics());
     }
 
     showMsg(id, text) { const n = $(id); n.textContent = text; n.classList.remove('hidden'); }
@@ -664,7 +1009,7 @@
 
         if (this.currentUid) {
           try {
-            await FirebaseSyncEngine.uploadVault(this.currentUid, { vault: [], folders: [], salt, hash: verifier, kdf });
+            await FirebaseSyncEngine.uploadVault(this.currentUid, { vault: [], folders: [], salt, hash: verifier, kdf, slKeyEnc: '' });
           } catch (err) {
             console.error(err);
             this.toast(this.syncErrorText(err));
@@ -711,6 +1056,7 @@
         this.toast(failed > 0 ? `Unlocked. ${failed} item(s) failed to decrypt.` : 'Vault unlocked.');
 
         if (result.needsUpgrade) await this.upgradeKdf(password);
+        await this.maybeOfferBiometrics(password);
       } catch (err) {
         console.error(err);
         this.showMsg('unlock-error', 'Error unlocking: ' + err.message);
@@ -751,6 +1097,7 @@
       this.idleTimer = null;
       this.aesKey = null;
       this.decryptedVault = [];
+      this.simpleLoginKey = '';
       this.activeTotp = null;
       this.closeSheet();
       this.closeDialog();
@@ -785,6 +1132,7 @@
       if (!ok) return;
 
       StorageController.wipeScope();
+      await this.disableBiometrics({ silent: true });
       this.aesKey = null;
       this.decryptedVault = [];
       this.folders = [];
@@ -823,6 +1171,7 @@
 
       this.decryptedVault = items;
       this.folders = StorageController.getFolders();
+      await this.loadSimpleLoginKey();
       this.renderVault();
       return failed;
     }
@@ -854,6 +1203,7 @@
             salt: StorageController.getSalt(),
             hash: StorageController.getMasterHash(),
             kdf: StorageController.getKdf(),
+            slKeyEnc: StorageController.getSimpleLoginKeyEnc(),
           });
         } catch (err) {
           console.error(err);
@@ -877,6 +1227,7 @@
       if (c === 'notes') return item.type === 'note' || item.type === 'notes';
       if (c === 'cards') return item.type === 'card' || item.type === 'cards';
       if (c === 'identity') return item.type === 'identity';
+      if (c.startsWith('folder_')) return item.data && item.data.folderId === c;
       return true;
     }
 
@@ -907,6 +1258,7 @@
 
     renderVault() {
       this.updateCounts();
+      this.renderFolderChips();
 
       const list = $('vault-list');
       list.innerHTML = '';
@@ -943,6 +1295,10 @@
       } else if (this.activeCategory === 'favorites') {
         title = 'No favourites yet';
         text = 'Open an item and tap the star to keep it here.';
+      } else if (this.activeCategory.startsWith('folder_')) {
+        const folder = this.folders.find((f) => f.id === this.activeCategory);
+        title = 'Folder is empty';
+        text = `Nothing is filed under “${folder ? folder.name : 'this folder'}” yet. Edit an item and pick this folder to move it here.`;
       } else if (this.decryptedVault.some((i) => !i.isTrashed)) {
         title = 'Nothing in this category';
         text = 'Try another category, or tap + to add something.';
@@ -1192,6 +1548,45 @@
       nameInput.value = existing ? (existing.data.name || '') : '';
       const nameField = el('div', { class: 'field' }, [el('label', { text: 'Title' }), nameInput]);
 
+      // Folder picker, with an inline escape hatch so you can create a folder
+      // without leaving the editor.
+      const folderSelect = el('select', { class: 'select', style: 'width:100%;' });
+      const NEW_FOLDER = '__new__';
+      const fillFolders = (selected) => {
+        folderSelect.innerHTML = '';
+        const none = el('option', { text: 'No folder' });
+        none.value = '';
+        folderSelect.appendChild(none);
+
+        this.folders.forEach((f) => {
+          const opt = el('option', { text: f.name });
+          opt.value = f.id;
+          folderSelect.appendChild(opt);
+        });
+
+        const add = el('option', { text: '+ New folder…' });
+        add.value = NEW_FOLDER;
+        folderSelect.appendChild(add);
+
+        folderSelect.value = selected || '';
+      };
+      fillFolders(existing ? (existing.data.folderId || '') : (
+        // Adding from inside a folder view files it there by default.
+        this.activeCategory.startsWith('folder_') ? this.activeCategory : ''
+      ));
+
+      folderSelect.addEventListener('change', async () => {
+        if (folderSelect.value !== NEW_FOLDER) return;
+        const previous = existing ? (existing.data.folderId || '') : '';
+        const folder = await this.promptNewFolder();
+        fillFolders(folder ? folder.id : previous);
+      });
+
+      const folderField = el('div', { class: 'field' }, [
+        el('label', { text: 'Folder' }),
+        folderSelect,
+      ]);
+
       const dynamic = el('div', { class: 'field', style: 'gap:15px;' });
 
       const buildFields = (type) => {
@@ -1250,7 +1645,7 @@
       typeSelect.addEventListener('change', () => buildFields(typeSelect.value));
       buildFields(typeSelect.value);
 
-      form.append(typeField, nameField, dynamic);
+      form.append(typeField, nameField, folderField, dynamic);
 
       const saveBtn = el('button', { class: 'btn btn-primary', attrs: { type: 'button' }, text: 'Save' });
       const cancelBtn = el('button', { class: 'btn btn-ghost', attrs: { type: 'button' }, text: 'Cancel', on: { click: () => this.closeSheet() } });
@@ -1262,7 +1657,8 @@
 
         if (!name) return this.toast('Give the item a title.');
 
-        const data = { name, folderId: existing ? (existing.data.folderId || '') : '' };
+        const folderId = folderSelect.value === NEW_FOLDER ? '' : folderSelect.value;
+        const data = { name, folderId };
 
         if (type === 'login') {
           data.username = val('ed-user');
@@ -1404,7 +1800,7 @@
 
     async toolMasking() {
       const body = el('div', { class: 'tool-body' });
-      const key = StorageController.getSimpleLoginKey();
+      const key = this.getSimpleLoginKey();
 
       if (!key) {
         body.appendChild(el('div', { class: 'empty' }, [
@@ -1663,6 +2059,8 @@
             confirmLabel: 'Sign out',
           });
           if (!ok) return;
+          await this.disableBiometrics({ silent: true });
+          localStorage.removeItem('cv:biometric:offered');
           await FirebaseSyncEngine.logout();
           StorageController.setLocalChoice(false);
           this.lock({ silent: true });
@@ -1673,6 +2071,46 @@
       });
 
       $('set-btn-check-updates').addEventListener('click', () => this.checkUpdates({ silent: false }));
+
+      const bioToggle = $('set-biometric');
+      bioToggle.addEventListener('change', async () => {
+        if (bioToggle.checked) {
+          // Re-prove the master password before sealing it: the vault may have
+          // been unlocked for a while, and this is the moment it gets stored.
+          const password = await this.askForText({
+            title: 'Confirm master password',
+            body: 'Your master password is sealed behind your fingerprint. It is never stored in readable form.',
+            label: 'Master password',
+            confirmLabel: 'Enable',
+          });
+          if (!password) { bioToggle.checked = false; return; }
+
+          const check = await CryptoEngine.unlock(
+            password,
+            StorageController.getSalt(),
+            StorageController.getMasterHash(),
+            StorageController.getKdf()
+          );
+          if (!check.ok) {
+            bioToggle.checked = false;
+            this.toast('That is not your master password.');
+            return;
+          }
+
+          const enabled = await this.enableBiometrics(password);
+          bioToggle.checked = enabled;
+        } else {
+          await this.disableBiometrics();
+        }
+      });
+
+      $('set-btn-export').addEventListener('click', () => this.exportVault());
+      $('set-btn-import').addEventListener('click', () => this.triggerImport());
+      $('import-file-input').addEventListener('change', (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (file) this.importVaultFile(file);
+        e.target.value = '';
+      });
 
       const autoBox = $('set-auto-update');
       autoBox.checked = UpdateStorage.getAutoCheck();
@@ -1703,9 +2141,8 @@
         this.toast(clip.value === 'never' ? 'Clipboard will not be cleared.' : `Clipboard clears after ${clip.value}s.`);
       });
 
-      $('set-btn-save-sl').addEventListener('click', () => {
-        StorageController.setSimpleLoginKey($('set-sl-key').value.trim());
-        this.toast('SimpleLogin key saved.');
+      $('set-btn-save-sl').addEventListener('click', async () => {
+        await this.saveSimpleLoginKey($('set-sl-key').value.trim());
       });
 
       $('set-btn-destroy').addEventListener('click', async () => {
@@ -1721,6 +2158,7 @@
         if (!ok) return;
 
         StorageController.wipeScope();
+        await this.disableBiometrics({ silent: true });
         if (this.currentUid) {
           try { await FirebaseSyncEngine.deleteVault(this.currentUid); }
           catch (err) { this.toast(this.syncErrorText(err)); }
@@ -1733,12 +2171,155 @@
       });
     }
 
+    // ------------------------------------------------------ import / export
+
+    /**
+     * Exports the decrypted vault as JSON and hands it to the Android share
+     * sheet, so the user picks where it lands (Drive, email, Files…).
+     *
+     * The export is deliberately plaintext for portability into other password
+     * managers, which is exactly why it asks first in blunt terms.
+     */
+    async exportVault() {
+      if (!this.aesKey) return this.toast('Unlock your vault first.');
+
+      const count = this.decryptedVault.length;
+      const ok = await this.confirm({
+        title: 'Export is not encrypted',
+        body: `The backup will contain all ${count} item(s) — passwords, notes and card numbers — as plain readable text. Anyone who opens the file can read everything. Save it somewhere safe and delete it when you're done.`,
+        confirmLabel: 'Export anyway',
+        danger: true,
+      });
+      if (!ok) return;
+
+      const payload = JSON.stringify({
+        exportedAt: new Date().toISOString(),
+        version: '2.0.0',
+        encrypted: false,
+        source: 'ciphervault-android',
+        folders: this.folders,
+        items: this.decryptedVault,
+      }, null, 2);
+
+      const filename = `ciphervault-export-${new Date().toISOString().slice(0, 10)}.json`;
+
+      if (!isNative || !CapPlugins.Filesystem) {
+        // Browser fallback so this is testable outside the APK.
+        const url = URL.createObjectURL(new Blob([payload], { type: 'application/json' }));
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+        this.toast('Backup downloaded.');
+        return;
+      }
+
+      try {
+        // Cache, not Documents: the file is a transient hand-off to the share
+        // sheet and should not linger in a user-visible folder.
+        const written = await CapPlugins.Filesystem.writeFile({
+          path: filename,
+          data: payload,
+          directory: 'CACHE',
+          encoding: 'utf8',
+        });
+
+        if (CapPlugins.Share) {
+          await CapPlugins.Share.share({
+            title: 'CipherVault backup',
+            text: 'CipherVault vault export (unencrypted)',
+            url: written.uri,
+            dialogTitle: 'Save your CipherVault backup',
+          });
+        }
+        this.toast(`Exported ${count} item(s).`);
+      } catch (err) {
+        // The user dismissing the share sheet surfaces as an error too.
+        if (err && /cancel/i.test(err.message || '')) return;
+        console.error('Export failed:', err);
+        this.toast('Export failed: ' + ((err && err.message) || 'unknown error'));
+      }
+    }
+
+    /** Opens the system file picker. The WebView handles this natively. */
+    triggerImport() {
+      if (!this.aesKey) return this.toast('Unlock your vault first.');
+      const input = $('import-file-input');
+      input.value = '';
+      input.click();
+    }
+
+    async importVaultFile(file) {
+      if (!file || !this.aesKey) return;
+
+      let parsed;
+      try {
+        parsed = JSON.parse(await file.text());
+      } catch (err) {
+        return this.dialog({
+          title: "Couldn't read that file",
+          icon: ICONS.warn,
+          body: 'It does not look like valid JSON. Pick a file exported from CipherVault.',
+          actions: [{ label: 'OK', style: 'btn-primary' }],
+        });
+      }
+
+      const incoming = Array.isArray(parsed) ? parsed : (parsed.items || []);
+      const usable = incoming.filter((i) => i && i.data && i.data.name);
+
+      if (usable.length === 0) {
+        return this.dialog({
+          title: 'Nothing to import',
+          icon: ICONS.warn,
+          body: 'No vault items were found in that file.',
+          actions: [{ label: 'OK', style: 'btn-primary' }],
+        });
+      }
+
+      const incomingFolders = Array.isArray(parsed.folders) ? parsed.folders : [];
+      const ok = await this.confirm({
+        title: `Import ${usable.length} item(s)?`,
+        body: 'These are added alongside what you already have — nothing is overwritten or removed. Duplicates are possible if you import the same file twice.',
+        confirmLabel: 'Import',
+      });
+      if (!ok) return;
+
+      // Bring folders across first so folderId references still resolve.
+      const knownFolders = new Set(this.folders.map((f) => f.id));
+      incomingFolders.forEach((f) => {
+        if (f && f.id && f.name && !knownFolders.has(f.id)) {
+          this.folders.push({ id: f.id, name: f.name });
+          knownFolders.add(f.id);
+        }
+      });
+
+      usable.forEach((item) => {
+        const data = Object.assign({}, item.data);
+        if (data.folderId && !knownFolders.has(data.folderId)) data.folderId = '';
+
+        this.decryptedVault.push({
+          id: 'item_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+          type: item.type || 'login',
+          isFavorite: !!item.isFavorite,
+          isTrashed: !!item.isTrashed,
+          createdAt: item.createdAt || new Date().toISOString(),
+          data,
+        });
+      });
+
+      await this.saveVault();
+      this.renderVault();
+      this.toast(`Imported ${usable.length} item(s).`);
+    }
+
     refreshSettings() {
       $('set-account-email').textContent = this.firebaseUser ? this.firebaseUser.email : 'Not signed in (this device only)';
       $('set-account-action').textContent = this.firebaseUser ? 'Sign Out' : 'Sign In';
-      $('set-sl-key').value = StorageController.getSimpleLoginKey();
+      $('set-sl-key').value = this.getSimpleLoginKey();
       $('set-auto-lock').value = StorageController.getAutoLockMinutes();
       $('set-clipboard').value = StorageController.getClipboardDelay();
+      this.refreshBiometricState();
     }
 
     async refreshVersionLabels() {

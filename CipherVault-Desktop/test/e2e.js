@@ -240,6 +240,50 @@ const RENDERER_TEST = `(async () => {
   app.firebaseUser = null; app.currentUid = null; SC.setScope(null);
   localStorage.clear();
 
+  // ---- 14c. SimpleLogin key: encrypted at rest, carried in the sync ----
+  SC.setScope(null);
+  $('btn-welcome-local').click();
+  await settle(50);
+  const SLPASS = 'SlKeyCheck!2026';
+  $('create-pass-input').value = SLPASS;
+  $('confirm-pass-input').value = SLPASS;
+  $('setup-form').dispatchEvent(new Event('submit', { cancelable: true }));
+  await settle(4000);
+
+  await app.saveSimpleLoginKey('desktop_sl_key_abc123', { silent: true });
+  ok('sl: readable while unlocked', app.getSimpleLoginKey() === 'desktop_sl_key_abc123');
+  ok('sl: never stored in plaintext', !JSON.stringify(localStorage).includes('desktop_sl_key_abc123'));
+
+  app.lockVault();
+  await settle(120);
+  ok('sl: cleared from memory on lock', app.getSimpleLoginKey() === '');
+
+  $('master-pass-input').value = SLPASS;
+  await app.handleUnlock();
+  await settle(2500);
+  ok('sl: restored after unlock', app.getSimpleLoginKey() === 'desktop_sl_key_abc123');
+
+  let slPayload = null;
+  const realUp = window.CipherVault.FirebaseSyncEngine.uploadVault;
+  window.CipherVault.FirebaseSyncEngine.uploadVault = async (u, p) => { slPayload = p; };
+  app.currentUid = 'sluid';
+  await app.saveEncryptedVault();
+  app.currentUid = null;
+  window.CipherVault.FirebaseSyncEngine.uploadVault = realUp;
+  ok('sl: encrypted key travels in the sync payload',
+     !!slPayload && typeof slPayload.slKeyEnc === 'string' && slPayload.slKeyEnc.length > 0);
+  ok('sl: sync payload carries no plaintext key',
+     !JSON.stringify(slPayload).includes('desktop_sl_key_abc123'));
+
+  SC.setSimpleLoginKeyEnc('');
+  localStorage.setItem('cv:local:sl_key', 'old_plain_key_777');
+  await app.loadSimpleLoginKey();
+  ok('sl: legacy plaintext key migrated', app.getSimpleLoginKey() === 'old_plain_key_777');
+  ok('sl: legacy plaintext slot cleared', localStorage.getItem('cv:local:sl_key') === null);
+  ok('sl: migrated key is now encrypted', !JSON.stringify(localStorage).includes('old_plain_key_777'));
+
+  localStorage.clear();
+
   // ---- 15. escaping ----
   ok('escapeHtml neutralises tags and quotes',
      app.escapeHtml('<img src="x" onerror=\\'alert(1)\\'>') === '&lt;img src=&quot;x&quot; onerror=&#39;alert(1)&#39;&gt;',

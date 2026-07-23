@@ -344,6 +344,24 @@ input::placeholder, textarea::placeholder { color: var(--text-disabled); }
 .chip-count { font-size: 11px; font-weight: 700; color: var(--text-muted); }
 .chip.active .chip-count { color: var(--text-secondary); }
 
+/* Separates the fixed categories from the user's folders. */
+.chip-divider {
+  flex-shrink: 0;
+  width: 1px;
+  align-self: center;
+  height: 20px;
+  background-color: var(--border-color);
+}
+.chip-divider[hidden] { display: none; }
+
+.chip-folder svg { width: 13px; height: 13px; flex-shrink: 0; opacity: 0.75; }
+
+.chip-add {
+  border-style: dashed;
+  color: var(--text-muted);
+}
+.chip-add svg { width: 13px; height: 13px; flex-shrink: 0; }
+
 /* ---------- Vault list ---------- */
 
 .vault-row {

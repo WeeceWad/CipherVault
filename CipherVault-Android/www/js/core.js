@@ -313,19 +313,21 @@ class FirebaseSyncEngine {
     await firebase.auth().sendPasswordResetEmail(email);
   }
 
-  static async uploadVault(uid, { vault, folders, salt, hash, kdf }) {
+  static async uploadVault(uid, { vault, folders, salt, hash, kdf, slKeyEnc }) {
     if (typeof firebase === 'undefined') throw new Error("Firebase SDK not loaded.");
     if (!uid) throw new Error("Not signed in.");
     if (!salt || !hash) throw new Error("Refusing to sync a vault with no master key material.");
 
     const db = firebase.firestore();
     await db.collection("users").doc(uid).set({
-      schemaVersion: 2,
+      schemaVersion: 3,
       vault: Array.isArray(vault) ? vault : [],
       folders: Array.isArray(folders) ? folders : [],
       salt: salt,
       hash: hash,
       kdf: kdf || { v: 1, iterations: 100000 },
+      // Encrypted with the vault key, so the server never sees the API key.
+      slKeyEnc: typeof slKeyEnc === "string" ? slKeyEnc : "",
       updatedAtMs: Date.now(),
       lastSynced: firebase.firestore.FieldValue.serverTimestamp()
     });
@@ -352,6 +354,7 @@ class FirebaseSyncEngine {
       salt: typeof data.salt === "string" ? data.salt : null,
       hash: typeof data.hash === "string" ? data.hash : null,
       kdf: data.kdf && typeof data.kdf.v === "number" ? data.kdf : { v: 1, iterations: 100000 },
+      slKeyEnc: typeof data.slKeyEnc === "string" ? data.slKeyEnc : "",
       updatedAtMs: typeof data.updatedAtMs === "number" ? data.updatedAtMs : 0,
       // A document only counts as a real vault once it carries key material.
       isProvisioned: typeof data.salt === "string" && typeof data.hash === "string",
@@ -407,6 +410,7 @@ class StorageController {
         kdf: this.getKdf(),
         items: this.getEncryptedItems(),
         folders: this.getFolders(),
+        slKeyEnc: this.getSimpleLoginKeyEnc(),
       };
     } finally {
       this._scope = previous;
@@ -489,8 +493,26 @@ class StorageController {
     this._set("items", JSON.stringify(Array.isArray(itemsList) ? itemsList : []));
   }
 
-  static getSimpleLoginKey() { return this._get("sl_key") || ""; }
-  static setSimpleLoginKey(key) { this._set("sl_key", key); }
+  /**
+   * SimpleLogin API key.
+   *
+   * Held as a blob encrypted with the vault key, so it syncs between devices
+   * through the same Firestore document as everything else and is never at
+   * rest in the clear. It used to sit in localStorage as plaintext, readable
+   * by anything with access to the profile - and it grants full control of
+   * the user's aliases.
+   *
+   * `sl_key` (plaintext) is only still read so an existing one can be
+   * migrated on the next unlock; see CipherVaultApp.migrateSimpleLoginKey.
+   */
+  static getLegacySimpleLoginKey() { return this._get("sl_key") || ""; }
+  static clearLegacySimpleLoginKey() { this._del("sl_key"); }
+
+  static getSimpleLoginKeyEnc() { return this._get("sl_key_enc") || ""; }
+  static setSimpleLoginKeyEnc(blob) {
+    if (blob) this._set("sl_key_enc", blob);
+    else this._del("sl_key_enc");
+  }
 
   /** Clipboard timeout is a device preference, so it stays outside the scope. */
   static getClipboardDelay() {
@@ -524,7 +546,7 @@ class StorageController {
 
   /** Wipes every trace of the currently scoped vault from this device. */
   static wipeScope() {
-    ["salt", "hash", "kdf", "items", "sl_key", "folders"].forEach((n) => this._del(n));
+    ["salt", "hash", "kdf", "items", "sl_key", "sl_key_enc", "folders"].forEach((n) => this._del(n));
   }
 
   static getLocalChoice() { return localStorage.getItem("cv:local_choice") === "true"; }
