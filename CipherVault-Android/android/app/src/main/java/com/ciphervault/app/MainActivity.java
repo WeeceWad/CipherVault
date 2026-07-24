@@ -12,6 +12,7 @@ public class MainActivity extends BridgeActivity {
         // Local plugins must be registered before the bridge starts.
         registerPlugin(AppUpdaterPlugin.class);
         registerPlugin(BiometricPlugin.class);
+        registerPlugin(AutofillBridgePlugin.class);
 
         super.onCreate(savedInstanceState);
 

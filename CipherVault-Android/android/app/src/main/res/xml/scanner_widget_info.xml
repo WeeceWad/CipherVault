@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Home-screen widget metadata. A small tap target - one cell - that opens the
+  QR unlock scanner behind a biometric prompt. No auto-updates and no preview
+  data, so updatePeriodMillis is 0.
+-->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="40dp"
+    android:minHeight="40dp"
+    android:targetCellWidth="1"
+    android:targetCellHeight="1"
+    android:updatePeriodMillis="0"
+    android:initialLayout="@layout/scanner_widget"
+    android:previewImage="@drawable/ic_launcher_foreground"
+    android:resizeMode="none"
+    android:widgetCategory="home_screen" />

@@ -211,6 +211,25 @@ class CryptoEngine {
   }
 }
 
+// --- ITEM TYPES ---
+//
+// The vault holds logins and secure notes. Earlier versions also offered
+// passkeys, credit cards and identities; those were dropped, but items of
+// those types may still exist in an older vault. They are never created any
+// more and have no tab of their own, yet they still render in All Items and
+// can be opened and deleted - silently hiding somebody's data would be worse
+// than showing a type we no longer advertise.
+//
+// Both spellings of each type are accepted because early builds wrote the
+// plural form.
+const LOGIN_TYPES = ["login", "passwords"];
+const NOTE_TYPES = ["note", "notes"];
+const RETIRED_TYPES = ["passkey", "passkeys", "card", "cards", "identity"];
+
+const isLoginType = (t) => LOGIN_TYPES.includes(t);
+const isNoteType = (t) => NOTE_TYPES.includes(t);
+const isRetiredType = (t) => RETIRED_TYPES.includes(t);
+
 // --- TOTP AUTHENTICATOR ENGINE (RFC 6238) ---
 class TOTPEngine {
   static async generateTOTP(secretBase32, period = 30, digits = 6) {

@@ -41,8 +41,13 @@ CipherVault-Android/
   android/             generated native project
     app/src/main/java/com/ciphervault/app/
       MainActivity.java
-      AppUpdaterPlugin.java   downloads + installs APK updates
-      BiometricPlugin.java    seals the master password behind BiometricPrompt
+      AppUpdaterPlugin.java       downloads + installs APK updates
+      BiometricPlugin.java        seals the master password behind BiometricPrompt
+      AutofillBridgePlugin.java   pushes logins into the native autofill cache
+      AutofillStore.java          the RSA+AES encrypted cache
+      CipherVaultAutofillService.java  the system autofill service
+      AutofillUnlockActivity.java biometric gate in front of autofill
+      ScannerWidgetProvider.java  the home-screen QR-scanner widget
   scripts/sync-core.js
 ```
 
@@ -50,24 +55,31 @@ CipherVault-Android/
 
 Three tabs along the bottom:
 
-- **Vault** — search, horizontally scrolling category chips (All, Favourites,
-  Logins, Passkeys, Notes, Cards, Identity, Trash), then your folders, then a
-  dashed **＋ Folder** chip. A `+` button adds items. Tapping an item opens a
+- **Vault** — search, a three-way segmented control (All / Logins / Notes) that
+  always fits on screen, and a folder button beside it that opens a picker for
+  folders and Trash. A `+` button adds items. Tapping an item opens a
   full-screen detail sheet; secrets are masked until you tap Show.
 - **Tools** — Password Generator, Email Masking (SimpleLogin), Password Health,
   Breach Scanner.
 - **Settings** — account, updates, biometrics, auto-lock, clipboard,
   integrations, backup, danger zone.
 
+Only two item types exist: **logins** and **secure notes**. (Earlier versions
+also had passkeys, cards and identities and a favourites system; those were
+removed. Items of the old types created before still open and can be edited or
+deleted — the editor keeps their type rather than silently converting them —
+they just can't be created any more.)
+
 ### Folders
 
-Folder chips sit after the fixed categories, each showing how many items it
-holds. **Long-press** a folder chip to rename or delete it — deleting keeps the
-items and just moves them back to All.
+The folder button beside the segmented control opens a picker listing your
+folders (each with a count) and Trash. A row's **⋮** button renames or deletes
+that folder — deleting keeps the items and moves them back to All. When a folder
+or Trash is active, a banner shows which one, with a one-tap way back to All.
 
 The item editor has a folder picker with an inline **+ New folder…** option, so
 you can file something without leaving the editor. Adding an item while viewing
-a folder files it there by default.
+a folder — or the Notes segment — preselects that folder or type.
 
 ### Biometric unlock
 
@@ -286,9 +298,34 @@ the installed app is rejected by the system.
 - **`androidScheme: https`** so the WebView origin is a secure context, which
   WebCrypto requires.
 
-## Not built yet
+## System autofill
 
-- **System-wide autofill.** Filling passwords into *other* Android apps needs a
-  native `AutofillService`, which is a separate Kotlin component with its own
-  bridge to the decrypted vault. Copy-to-clipboard works now, with the same
-  auto-clear timer as the desktop.
+CipherVault can be Android's password service (Settings → Autofill & Widget →
+System Autofill, or Android Settings → Passwords, passkeys & accounts).
+
+The vault stays encrypted in the WebView; native code can't read it. Instead
+the app keeps a **separate cache of just the logins**, encrypted with a hybrid
+scheme in `AutofillStore`:
+
+- An RSA key pair in the AndroidKeyStore. The **public** key encrypts, so the
+  app can refresh the cache any time the vault changes — no prompt. The
+  **private** key is `setUserAuthenticationRequired`, so decrypting needs a
+  recent biometric.
+- Each write generates a fresh AES key, AES-GCM encrypts the logins, and
+  RSA-wraps that AES key with the public key. Reading unwraps it with the
+  auth-gated private key.
+
+(A symmetric auth-bound key was the obvious first try, but AndroidKeyStore gates
+those on auth for *encryption too*, which made cache writes fail unpredictably —
+the asymmetric split is the standard fix. There's an instrumented test,
+`AutofillStoreTest`, that proves the round-trip on a real keystore.)
+
+When you tap CipherVault in another app's autofill bar, `AutofillUnlockActivity`
+shows a biometric prompt, then returns one entry per matching login, ranked so
+the ones whose URL matches the app or site come first. Nothing is revealed
+before the prompt. Notes and folders never enter the cache.
+
+Saving new logins from other apps isn't wired up — it would mean decrypting the
+vault outside the app. The save prompt points you back into CipherVault instead.
+
+## Not built yet

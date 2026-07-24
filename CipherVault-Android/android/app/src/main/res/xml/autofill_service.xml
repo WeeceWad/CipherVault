@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Autofill service metadata. Points at the settings screen the system opens
+  from Settings -> Passwords & accounts, and lets the service compile heuristics
+  for the whole activity so a username field on a previous page can still be
+  matched to a password field later.
+-->
+<autofill-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:settingsActivity="com.ciphervault.app.MainActivity"
+    android:supportsInlineSuggestions="true" />

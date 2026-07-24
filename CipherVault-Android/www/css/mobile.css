@@ -318,49 +318,140 @@ input::placeholder, textarea::placeholder { color: var(--text-disabled); }
 .search-bar input { flex: 1; min-width: 0; height: 100%; min-height: 0; padding: 0; background: none; border: none; font-size: 15px; }
 .clear-search { width: 26px; height: 26px; flex-shrink: 0; padding: 5px; background: none; border: none; color: var(--text-muted); cursor: pointer; }
 
-.chip-row {
+.filter-bar {
   flex-shrink: 0;
-  display: flex; gap: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   padding: 12px 16px;
-  overflow-x: auto;
-  scrollbar-width: none;
 }
-.chip-row::-webkit-scrollbar { display: none; }
 
-.chip {
-  display: inline-flex; align-items: center; gap: 6px;
-  flex-shrink: 0;
-  height: 34px;
-  padding: 0 13px;
-  background-color: var(--bg-surface);
+/* Three fixed segments - no horizontal scrolling. */
+.segmented {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  padding: 3px;
+  background-color: var(--bg-input);
   border: 1px solid var(--border-color);
-  border-radius: 999px;
-  color: var(--text-secondary);
-  font-family: inherit; font-size: 13px; font-weight: 600;
+  border-radius: var(--radius-md);
+}
+
+.segment {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 36px;
+  padding: 0 6px;
+  background: none;
+  border: none;
+  border-radius: calc(var(--radius-md) - 4px);
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
+  transition: background-color 0.15s, color 0.15s;
 }
-.chip.active { background-color: var(--accent-primary); border-color: var(--accent-primary-hover); color: var(--text-primary); }
-.chip-count { font-size: 11px; font-weight: 700; color: var(--text-muted); }
-.chip.active .chip-count { color: var(--text-secondary); }
+.segment.active {
+  background-color: var(--accent-primary);
+  color: var(--text-primary);
+}
 
-/* Separates the fixed categories from the user's folders. */
-.chip-divider {
+.seg-count { font-size: 11px; font-weight: 700; opacity: 0.75; }
+
+.filter-btn {
+  position: relative;
+  width: 44px;
+  height: 44px;
   flex-shrink: 0;
-  width: 1px;
-  align-self: center;
-  height: 20px;
-  background-color: var(--border-color);
+  padding: 11px;
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  cursor: pointer;
 }
-.chip-divider[hidden] { display: none; }
+.filter-btn:active { background-color: var(--bg-surface); }
 
-.chip-folder svg { width: 13px; height: 13px; flex-shrink: 0; opacity: 0.75; }
+.filter-dot {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: var(--text-primary);
+}
+.filter-dot[hidden] { display: none; }
 
-.chip-add {
-  border-style: dashed;
+/* Tells you which folder you are in, and gets you out in one tap. */
+.active-filter {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 16px 10px;
+  padding: 8px 10px 8px 13px;
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.active-filter button {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  padding: 4px;
+  background: none;
+  border: none;
   color: var(--text-muted);
+  cursor: pointer;
 }
-.chip-add svg { width: 13px; height: 13px; flex-shrink: 0; }
+
+/* Rows inside the folder picker sheet. */
+.picker-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 13px 14px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 15px;
+  text-align: left;
+  cursor: pointer;
+}
+.picker-row:last-child { border-bottom: none; }
+.picker-row:active { background-color: var(--bg-surface); }
+.picker-row.active { color: var(--text-primary); background-color: var(--bg-surface); }
+.picker-row svg { width: 19px; height: 19px; flex-shrink: 0; color: var(--text-muted); }
+.picker-row .picker-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker-row .picker-count { font-size: 12px; font-weight: 700; color: var(--text-muted); }
+.picker-row .picker-manage {
+  width: 30px; height: 30px; flex-shrink: 0; padding: 6px;
+  background: none; border: none; border-radius: var(--radius-sm);
+  color: var(--text-disabled); cursor: pointer;
+}
+.picker-row .picker-manage:active { background-color: var(--bg-surface-hover); color: var(--text-primary); }
+
+.picker-list {
+  max-height: 46vh;
+  overflow-y: auto;
+  margin: 0 -22px;
+  border-top: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-color);
+}
 
 /* ---------- Vault list ---------- */
 

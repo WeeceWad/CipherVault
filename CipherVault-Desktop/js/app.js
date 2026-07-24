@@ -1,6 +1,9 @@
 /**
- * CipherVault - Zero-Knowledge Desktop Security Workspace
- * Production-Grade Self-Contained JavaScript Architecture (Monochrome Dark Theme)
+ * CipherVault - encrypted password manager
+ *
+ * This file is the source of truth for every platform. The engine layer below
+ * is generated into the Android app and the browser extension; see
+ * CipherVault-Android/scripts/sync-core.js.
  */
 
 (function () {
@@ -207,6 +210,25 @@
       return result;
     }
   }
+
+  // --- ITEM TYPES ---
+  //
+  // The vault holds logins and secure notes. Earlier versions also offered
+  // passkeys, credit cards and identities; those were dropped, but items of
+  // those types may still exist in an older vault. They are never created any
+  // more and have no tab of their own, yet they still render in All Items and
+  // can be opened and deleted - silently hiding somebody's data would be worse
+  // than showing a type we no longer advertise.
+  //
+  // Both spellings of each type are accepted because early builds wrote the
+  // plural form.
+  const LOGIN_TYPES = ["login", "passwords"];
+  const NOTE_TYPES = ["note", "notes"];
+  const RETIRED_TYPES = ["passkey", "passkeys", "card", "cards", "identity"];
+
+  const isLoginType = (t) => LOGIN_TYPES.includes(t);
+  const isNoteType = (t) => NOTE_TYPES.includes(t);
+  const isRetiredType = (t) => RETIRED_TYPES.includes(t);
 
   // --- TOTP AUTHENTICATOR ENGINE (RFC 6238) ---
   class TOTPEngine {
@@ -1240,12 +1262,12 @@
         if (lockSub) {
           lockSub.textContent = account
             ? `Set the master password that encrypts the vault for ${account}. It is never sent anywhere.`
-            : "Set up a master password to protect your zero-knowledge vault.";
+            : "Set up a master password to protect your vault.";
         }
       } else {
         if (welcomeForm) welcomeForm.classList.remove("hidden");
         if (lockTitle) lockTitle.textContent = "Welcome to CipherVault";
-        if (lockSub) lockSub.textContent = "Your secure, zero-knowledge workspace.";
+        if (lockSub) lockSub.textContent = "Your secure vault, on every device.";
       }
     }
 
@@ -2277,22 +2299,14 @@
 
     updateCategoryCounts() {
       const total = this.decryptedVault.filter((i) => !i.isTrashed).length;
-      const favs = this.decryptedVault.filter((i) => !i.isTrashed && i.isFavorite).length;
-      const pass = this.decryptedVault.filter((i) => !i.isTrashed && (i.type === "login" || i.type === "passwords")).length;
-      const passkeys = this.decryptedVault.filter((i) => !i.isTrashed && (i.type === "passkeys" || i.type === "passkey")).length;
-      const notes = this.decryptedVault.filter((i) => !i.isTrashed && (i.type === "note" || i.type === "notes")).length;
-      const cards = this.decryptedVault.filter((i) => !i.isTrashed && (i.type === "card" || i.type === "cards")).length;
-      const identity = this.decryptedVault.filter((i) => !i.isTrashed && i.type === "identity").length;
+      const pass = this.decryptedVault.filter((i) => !i.isTrashed && isLoginType(i.type)).length;
+      const notes = this.decryptedVault.filter((i) => !i.isTrashed && isNoteType(i.type)).length;
       const trash = this.decryptedVault.filter((i) => i.isTrashed).length;
 
       const setEl = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
       setEl("count-all", total);
-      setEl("count-fav", favs);
       setEl("count-pw", pass);
-      setEl("count-passkeys", passkeys);
       setEl("count-notes", notes);
-      setEl("count-cards", cards);
-      setEl("count-identity", identity);
       setEl("count-trash", trash);
 
       const btnEmptyTrash = document.getElementById("btn-empty-trash");
@@ -2315,18 +2329,13 @@
         if (item.isTrashed) return false;
 
         // 3. Apply category filter
-        if (this.activeCategory === "favorites" && !item.isFavorite) return false;
-        
         if (this.activeCategory.startsWith("folder_")) {
           return item.data.folderId === this.activeCategory;
         }
 
-        if (this.activeCategory === "passwords" && item.type !== "login" && item.type !== "passwords") return false;
-        if (this.activeCategory === "passkeys" && item.type !== "passkeys" && item.type !== "passkey") return false;
-        if (this.activeCategory === "notes" && item.type !== "note" && item.type !== "notes") return false;
-        if (this.activeCategory === "cards" && item.type !== "card" && item.type !== "cards") return false;
-        if (this.activeCategory === "identity" && item.type !== "identity") return false;
-        
+        if (this.activeCategory === "passwords" && !isLoginType(item.type)) return false;
+        if (this.activeCategory === "notes" && !isNoteType(item.type)) return false;
+
         return true;
       });
 
@@ -2516,39 +2525,11 @@
       const body = document.getElementById("detail-fields-body");
       body.innerHTML = "";
 
-      if (item.type === "login" || item.type === "passwords") {
+      if (isLoginType(item.type)) {
         if (item.data.username) body.appendChild(this.createFieldCard("Username / Email", item.data.username, true));
         if (item.data.password) body.appendChild(this.createFieldCard("Password", item.data.password, true, true));
         if (item.data.url) body.appendChild(this.createFieldCard("Website URL", item.data.url, true));
-        if (item.data.totpSecret) {
-          const totpCode = await TOTPEngine.generateTOTP(item.data.totpSecret);
-          const totpCard = document.createElement("div");
-          totpCard.className = "detail-field-card";
-          totpCard.innerHTML = `
-            <div class="field-label-row"><label>Authenticator 2FA Code (TOTP)</label></div>
-            <div class="field-value-row">
-              <div class="totp-live-gauge">
-                <span class="totp-code-text" id="totp-val-display">${totpCode}</span>
-              </div>
-              <button class="btn-copy-sm" id="btn-copy-totp">Copy Code</button>
-            </div>
-          `;
-          totpCard.querySelector("#btn-copy-totp").addEventListener("click", () => {
-            // Read the live value: the code rotates every 30s and the one
-            // captured when this card was built goes stale.
-            const live = totpCard.querySelector("#totp-val-display")?.textContent || totpCode;
-            this.copyToClipboard(live);
-            this.showToast("2FA TOTP code copied!");
-          });
-          body.appendChild(totpCard);
-        }
-      } else if (item.type === "authenticator") {
-        if (item.data.accountName) body.appendChild(this.createFieldCard("Account Name / Email", item.data.accountName, true));
-        if (item.data.issuer) body.appendChild(this.createFieldCard("Issuer / Service", item.data.issuer, true));
-        if (item.data.totpSecret) {
-          const totpCode = await TOTPEngine.generateTOTP(item.data.totpSecret);
-          body.appendChild(this.createFieldCard("Live 2FA TOTP Code", totpCode, true));
-        }
+        if (item.data.notes) body.appendChild(this.createFieldCard("Notes", item.data.notes, true));
       } else if (item.type === "passkeys" || item.type === "passkey") {
         if (item.data.relyingParty) body.appendChild(this.createFieldCard("Relying Party / Domain", item.data.relyingParty, true));
         if (item.data.userHandle) body.appendChild(this.createFieldCard("User Handle / Account", item.data.userHandle, true));
@@ -2564,18 +2545,6 @@
         if (item.data.email) body.appendChild(this.createFieldCard("Primary Email", item.data.email, true));
         if (item.data.phone) body.appendChild(this.createFieldCard("Phone Number", item.data.phone, true));
         if (item.data.address) body.appendChild(this.createFieldCard("Residential Address", item.data.address, true));
-      }
-
-      // Favorite toggle button listener with live UI + counter updates
-      const btnFav = document.getElementById("btn-detail-fav");
-      if (btnFav) {
-        btnFav.onclick = () => {
-          item.isFavorite = !item.isFavorite;
-          this.saveEncryptedVault();
-          this.updateCategoryCounts();
-          this.renderList();
-          this.showToast(item.isFavorite ? "Added to favorites" : "Removed from favorites");
-        };
       }
 
       // Edit item button listener
@@ -3036,13 +3005,34 @@
         });
       }
 
+      // The type dropdown only offers logins and notes. An item created by an
+      // older version may be a card, passkey or identity - if that type has no
+      // matching <option>, assigning it silently selects nothing and the item
+      // would be saved as a different type, destroying its fields. So restore
+      // the option for the duration of the edit.
+      const typeSelect = document.getElementById("editor-type-select");
+      typeSelect.querySelectorAll("option[data-retired]").forEach((o) => o.remove());
+
+      if (itemToEdit && isRetiredType(itemToEdit.type)) {
+        const labels = {
+          passkey: "Passkey", passkeys: "Passkey",
+          card: "Credit Card", cards: "Credit Card",
+          identity: "Identity",
+        };
+        const opt = document.createElement("option");
+        opt.value = itemToEdit.type;
+        opt.textContent = `${labels[itemToEdit.type] || itemToEdit.type} (no longer offered)`;
+        opt.dataset.retired = "1";
+        typeSelect.appendChild(opt);
+      }
+
       if (itemToEdit) {
         this.editingItemId = itemToEdit.id;
         document.getElementById("editor-modal-title").textContent = "Edit Item";
         document.getElementById("editor-name").value = itemToEdit.data.name || "";
-        document.getElementById("editor-type-select").value = itemToEdit.type || "login";
+        typeSelect.value = itemToEdit.type || "login";
         if (folderSelect) folderSelect.value = itemToEdit.data.folderId || "";
-        
+
         this.renderDynamicEditorFields(itemToEdit.type || "login");
 
         // Populate existing item values into fields
@@ -3051,7 +3041,7 @@
           setVal("ed-user", itemToEdit.data.username);
           setVal("ed-pass", itemToEdit.data.password);
           setVal("ed-url", itemToEdit.data.url);
-          setVal("ed-totp", itemToEdit.data.totpSecret);
+          setVal("ed-login-notes", itemToEdit.data.notes);
           setVal("ed-pk-rp", itemToEdit.data.relyingParty);
           setVal("ed-pk-user", itemToEdit.data.userHandle);
           setVal("ed-note", itemToEdit.data.content);
@@ -3068,8 +3058,18 @@
         this.editingItemId = null;
         document.getElementById("editor-modal-title").textContent = "New Vault Item";
         document.getElementById("editor-name").value = "";
-        if (folderSelect) folderSelect.value = "";
-        this.renderDynamicEditorFields(document.getElementById("editor-type-select").value);
+
+        // Adding while a category is selected should default to that category:
+        // going to Secure Notes and pressing + means you want a note.
+        if (this.activeCategory === "notes") typeSelect.value = "note";
+        else if (this.activeCategory === "passwords") typeSelect.value = "login";
+
+        // Likewise, adding from inside a folder files it there.
+        if (folderSelect) {
+          folderSelect.value = this.activeCategory.startsWith("folder_") ? this.activeCategory : "";
+        }
+
+        this.renderDynamicEditorFields(typeSelect.value);
       }
     }
 
@@ -3097,8 +3097,8 @@
           </div>
           <div class="field-group"><label>Website URL</label><input type="text" id="ed-url" placeholder="https://example.com"></div>
           <div class="field-group">
-            <label>Authenticator Secret (optional, Base32)</label>
-            <input type="text" id="ed-totp" placeholder="JBSWY3DPEHPK3PXP" autocomplete="off">
+            <label>Notes (optional)</label>
+            <textarea id="ed-login-notes" rows="3" placeholder="Recovery codes, security answers, anything else..."></textarea>
           </div>
         `;
 
@@ -3170,12 +3170,22 @@
         return;
       }
 
-      if (type === "login" || type === "passwords") {
+      if (isLoginType(type)) {
         dataObj.username = getVal("ed-user");
         dataObj.password = getVal("ed-pass");
         dataObj.url = getVal("ed-url");
-        const totp = getVal("ed-totp").replace(/\s/g, "");
-        if (totp) dataObj.totpSecret = totp;
+        const notes = document.getElementById("ed-login-notes");
+        if (notes && notes.value.trim()) dataObj.notes = notes.value.trim();
+
+        // An older item may carry a TOTP secret. The field is gone from the
+        // editor, but silently dropping the secret on the next save would
+        // destroy data the user never asked to lose.
+        const existing = this.editingItemId
+          ? this.decryptedVault.find((i) => i.id === this.editingItemId)
+          : null;
+        if (existing && existing.data && existing.data.totpSecret) {
+          dataObj.totpSecret = existing.data.totpSecret;
+        }
       } else if (type === "passkeys" || type === "passkey") {
         dataObj.relyingParty = (document.getElementById("ed-pk-rp")?.value || "").trim();
         dataObj.userHandle = (document.getElementById("ed-pk-user")?.value || "").trim();

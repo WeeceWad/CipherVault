@@ -30,6 +30,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!-- Deep link the home-screen widget uses to jump straight to the
+                 QR unlock scanner. The app handles the biometric unlock itself
+                 (reusing the existing flow), so there is no second prompt. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="ciphervault" android:host="scan" />
+            </intent-filter>
+
         </activity>
 
         <provider
@@ -41,6 +51,46 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths"></meta-data>
         </provider>
+
+        <!--
+          Autofill service. BIND_AUTOFILL_SERVICE means only the system may bind
+          it. It reads an encrypted credential cache and shows nothing until the
+          user passes a biometric prompt (AutofillUnlockActivity).
+        -->
+        <service
+            android:name=".CipherVaultAutofillService"
+            android:exported="true"
+            android:permission="android.permission.BIND_AUTOFILL_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.autofill.AutofillService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.autofill"
+                android:resource="@xml/autofill_service" />
+        </service>
+
+        <!-- The biometric gate the autofill dropdown launches. Transparent, no
+             launcher icon; only the system starts it. -->
+        <activity
+            android:name=".AutofillUnlockActivity"
+            android:exported="false"
+            android:theme="@style/AutofillTransparent"
+            android:excludeFromRecents="true"
+            android:launchMode="singleInstance" />
+
+        <!-- Home-screen widget: one tap deep-links into the QR unlock scanner.
+             The app's own biometric unlock is the gate, so the widget stays a
+             plain launcher and holds nothing sensitive. -->
+        <receiver
+            android:name=".ScannerWidgetProvider"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/scanner_widget_info" />
+        </receiver>
     </application>
 
     <!-- Permissions -->

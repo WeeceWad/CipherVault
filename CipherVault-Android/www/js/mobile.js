@@ -49,13 +49,17 @@
     empty: '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"/></svg>',
   };
 
+  // Logins and notes are the only types that can be created. Passkey, card and
+  // identity entries were dropped, but items of those types may still exist in
+  // an older vault - they keep their icon and label so nothing looks broken,
+  // and they remain readable and deletable.
   const TYPE_META = {
     login: { label: 'Login', icon: ICONS.login },
     passwords: { label: 'Login', icon: ICONS.login },
-    passkeys: { label: 'Passkey', icon: ICONS.passkey },
-    passkey: { label: 'Passkey', icon: ICONS.passkey },
     note: { label: 'Note', icon: ICONS.note },
     notes: { label: 'Note', icon: ICONS.note },
+    passkeys: { label: 'Passkey', icon: ICONS.passkey },
+    passkey: { label: 'Passkey', icon: ICONS.passkey },
     card: { label: 'Card', icon: ICONS.card },
     cards: { label: 'Card', icon: ICONS.card },
     identity: { label: 'Identity', icon: ICONS.identity },
@@ -264,6 +268,36 @@
         CapPlugins.StatusBar.setBackgroundColor({ color: '#11131B' }).catch(() => {});
         CapPlugins.StatusBar.setStyle({ style: 'DARK' }).catch(() => {});
       }
+
+      // The home-screen widget deep-links here at ciphervault://scan.
+      CapPlugins.App.addListener('appUrlOpen', ({ url }) => this.handleDeepLink(url));
+      CapPlugins.App.getLaunchUrl().then((res) => {
+        if (res && res.url) this.handleDeepLink(res.url);
+      }).catch(() => {});
+    }
+
+    /**
+     * Widget entry point. Getting to the scanner needs an unlocked vault (it
+     * uses the in-memory master password), so if we are locked we run the
+     * normal biometric unlock first, then open the scanner. No second prompt.
+     */
+    async handleDeepLink(url) {
+      if (!url || url.indexOf('ciphervault://scan') !== 0) return;
+
+      const openScanner = () => {
+        this.switchTab('vault');
+        this.toolQrUnlock();
+      };
+
+      if (this.aesKey) { openScanner(); return; }
+
+      // Locked: try biometric unlock, then open the scanner on success.
+      this.pendingAfterUnlock = openScanner;
+      if (this.biometrics && (this.biometricStatus || {}).enrolled) {
+        this.unlockWithBiometrics();
+      } else {
+        this.toast('Unlock CipherVault, then it will open the scanner.');
+      }
     }
 
     lockOnBackground() {
@@ -293,11 +327,12 @@
         this.renderVault();
       });
 
-      document.querySelectorAll('#category-chips .chip[data-category]').forEach((chip) => {
-        chip.addEventListener('click', () => this.selectCategory(chip.dataset.category));
+      document.querySelectorAll('#category-segments .segment').forEach((seg) => {
+        seg.addEventListener('click', () => this.selectCategory(seg.dataset.category));
       });
 
-      $('btn-new-folder').addEventListener('click', () => this.promptNewFolder());
+      $('btn-open-filters').addEventListener('click', () => this.openFilterPicker());
+      $('btn-clear-filter').addEventListener('click', () => this.selectCategory('all'));
 
       document.querySelectorAll('.tool-card').forEach((card) => {
         card.addEventListener('click', () => this.openTool(card.dataset.tool));
@@ -312,6 +347,60 @@
       ['touchstart', 'keydown', 'click'].forEach((evt) => {
         window.addEventListener(evt, () => this.resetIdleTimer(), { passive: true, capture: true });
       });
+    }
+
+    // ------------------------------------------------------ system autofill
+    //
+    // Pushes just the login entries into a native, biometric-gated cache
+    // (AutofillBridge -> AutofillStore) so CipherVault can be Android's
+    // password service. Notes, folders and everything else stay in the vault.
+
+    get autofill() {
+      return (isNative && CapPlugins.AutofillBridge) || null;
+    }
+
+    /** Mirrors the current logins into the native cache. Fire-and-forget. */
+    async refreshAutofillCache() {
+      if (!this.autofill || !this.aesKey) return;
+      try {
+        const items = this.decryptedVault
+          .filter((i) => !i.isTrashed && isLoginType(i.type) && i.data && i.data.password)
+          .map((i) => ({
+            title: i.data.name || '',
+            username: i.data.username || '',
+            password: i.data.password || '',
+            url: i.data.url || '',
+          }));
+        await this.autofill.setCredentials({ items });
+      } catch (err) {
+        console.warn('Could not update autofill cache:', err);
+      }
+    }
+
+    async clearAutofillCache() {
+      if (!this.autofill) return;
+      try { await this.autofill.clear(); } catch (e) { /* nothing to clear */ }
+    }
+
+    async refreshAutofillState() {
+      const row = $('row-autofill');
+      if (!this.autofill) { if (row) row.hidden = true; return; }
+
+      let state = { supported: false, enabled: false };
+      try {
+        const s = await this.autofill.isSupported();
+        if (s.supported) state = Object.assign(state, await this.autofill.isEnabled(), { supported: true });
+      } catch (e) { /* leave defaults */ }
+
+      if (row) row.hidden = !state.supported;
+      const desc = $('set-autofill-desc');
+      const btn = $('set-btn-autofill');
+      if (desc) {
+        desc.textContent = state.enabled
+          ? 'CipherVault is your autofill service. Open a login here to keep it fresh.'
+          : 'Let CipherVault fill your saved logins into other apps and websites.';
+      }
+      if (btn) btn.textContent = state.enabled ? 'Autofill settings' : 'Enable';
     }
 
     // ------------------------------------------------------ QR unlock a PC
@@ -651,57 +740,122 @@
 
     selectCategory(category) {
       this.activeCategory = category;
-      document.querySelectorAll('#category-chips .chip[data-category]').forEach((c) => {
-        c.classList.toggle('active', c.dataset.category === category);
-      });
+      this.refreshFilterUi();
       this.renderVault();
     }
 
     /**
-     * Rebuilds the folder chips after the fixed categories. Kept in the same
-     * scrolling row so folders read as just another way to filter, which is
-     * how the desktop sidebar presents them.
+     * Syncs the segments, banner and filter dot with activeCategory.
+     * Deliberately does NOT re-render the list: renderVault calls this, so
+     * doing so would recurse.
      */
-    renderFolderChips() {
-      const row = $('category-chips');
-      const divider = $('folder-divider');
-      const addBtn = $('btn-new-folder');
+    refreshFilterUi() {
+      const category = this.activeCategory;
 
-      row.querySelectorAll('.chip-folder').forEach((c) => c.remove());
-      divider.hidden = this.folders.length === 0;
+      document.querySelectorAll('#category-segments .segment').forEach((seg) => {
+        seg.classList.toggle('active', seg.dataset.category === category);
+      });
+
+      // Folders and Trash live behind the filter button rather than in the
+      // segments, so surface the current one in a banner instead.
+      const isSecondary = category === 'trash' || category.startsWith('folder_');
+      const banner = $('active-filter-banner');
+      const dot = $('filter-active-dot');
+
+      if (isSecondary) {
+        const folder = this.folders.find((f) => f.id === category);
+        $('active-filter-label').textContent = category === 'trash'
+          ? 'Trash'
+          : (folder ? folder.name : 'Folder');
+        banner.classList.remove('hidden');
+        dot.hidden = false;
+      } else {
+        banner.classList.add('hidden');
+        dot.hidden = true;
+      }
+    }
+
+    /**
+     * Folder and Trash picker.
+     *
+     * These used to sit in the same horizontally scrolling row as the item
+     * types, so reaching a folder meant swiping past everything else. A
+     * vertical list in a sheet is one tap to open and one to choose, and it
+     * does not degrade as folders are added.
+     */
+    openFilterPicker() {
+      const list = el('div', { class: 'picker-list' });
+
+      const folderIcon = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>';
+
+      const row = ({ icon, label, count, active, onPick, onManage }) => {
+        const node = el('button', { class: `picker-row${active ? ' active' : ''}` }, [
+          el('span', { html: icon, style: 'width:19px;height:19px;flex-shrink:0;' }),
+          el('span', { class: 'picker-label', text: label }),
+          count !== undefined ? el('span', { class: 'picker-count', text: String(count) }) : null,
+        ]);
+        node.addEventListener('click', () => { this.closeDialog(); onPick(); });
+
+        if (onManage) {
+          const manage = el('button', {
+            class: 'picker-manage',
+            attrs: { 'aria-label': `Manage ${label}` },
+            html: '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>',
+          });
+          manage.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.closeDialog();
+            onManage();
+          });
+          node.appendChild(manage);
+        }
+        return node;
+      };
 
       this.folders.forEach((folder) => {
         const count = this.decryptedVault.filter(
           (i) => !i.isTrashed && i.data && i.data.folderId === folder.id
         ).length;
+        list.appendChild(row({
+          icon: folderIcon,
+          label: folder.name,
+          count,
+          active: this.activeCategory === folder.id,
+          onPick: () => this.selectCategory(folder.id),
+          onManage: () => this.manageFolder(folder),
+        }));
+      });
 
-        const chip = el('button', {
-          class: `chip chip-folder${this.activeCategory === folder.id ? ' active' : ''}`,
-          attrs: { 'data-category': folder.id },
-        }, [
-          el('span', { html: '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>', class: 'chip-folder-icon' }),
-          el('span', { text: folder.name }),
-          el('span', { class: 'chip-count', text: String(count) }),
-        ]);
+      if (this.folders.length === 0) {
+        list.appendChild(el('p', {
+          class: 'row-desc',
+          style: 'padding:18px 14px; text-align:center;',
+          text: 'No folders yet. Create one to group related items.',
+        }));
+      }
 
-        chip.addEventListener('click', () => this.selectCategory(folder.id));
+      list.appendChild(row({
+        icon: ICONS.trash,
+        label: 'Trash',
+        count: this.decryptedVault.filter((i) => i.isTrashed).length,
+        active: this.activeCategory === 'trash',
+        onPick: () => this.selectCategory('trash'),
+      }));
 
-        // Long-press to manage, since there is no room for a per-chip menu.
-        let holdTimer = null;
-        const startHold = () => {
-          holdTimer = setTimeout(() => {
-            holdTimer = null;
-            this.haptic();
-            this.manageFolder(folder);
-          }, 550);
-        };
-        const cancelHold = () => { if (holdTimer) clearTimeout(holdTimer); holdTimer = null; };
-        chip.addEventListener('touchstart', startHold, { passive: true });
-        chip.addEventListener('touchend', cancelHold);
-        chip.addEventListener('touchmove', cancelHold, { passive: true });
-        chip.addEventListener('contextmenu', (e) => { e.preventDefault(); this.manageFolder(folder); });
-
-        row.insertBefore(chip, addBtn);
+      this.dialog({
+        title: 'Folders',
+        body: list,
+        actions: [
+          {
+            label: 'New folder',
+            style: 'btn-primary',
+            onClick: async () => {
+              const folder = await this.promptNewFolder();
+              if (folder) this.selectCategory(folder.id);
+            },
+          },
+          { label: 'Close', style: 'btn-ghost' },
+        ],
       });
     }
 
@@ -747,7 +901,7 @@
       const folder = { id: 'folder_' + Date.now(), name };
       this.folders.push(folder);
       await this.saveFolders();
-      this.renderFolderChips();
+      this.refreshFilterUi();
       this.toast(`Folder “${name}” created.`);
       return folder;
     }
@@ -769,7 +923,7 @@
               if (!name || name === folder.name) return;
               folder.name = name;
               await this.saveFolders();
-              this.renderFolderChips();
+              this.refreshFilterUi();
               this.toast('Folder renamed.');
             },
           },
@@ -793,7 +947,7 @@
 
               await this.saveFolders();
               this.selectCategory(this.activeCategory);
-              this.renderFolderChips();
+              this.refreshFilterUi();
               this.toast('Folder deleted.');
             },
           },
@@ -1025,7 +1179,7 @@
       } else {
         this.showLockPane('welcome-pane');
         $('lock-title').textContent = 'CipherVault';
-        $('lock-subtitle').textContent = 'Your secure, zero-knowledge vault.';
+        $('lock-subtitle').textContent = 'Your passwords, on every device.';
       }
     }
 
@@ -1047,6 +1201,7 @@
       });
       $('btn-switch-account').addEventListener('click', async () => {
         await this.disableBiometrics({ silent: true });
+        await this.clearAutofillCache();
         localStorage.removeItem('cv:biometric:offered');
         if (this.firebaseUser) await FirebaseSyncEngine.logout();
         StorageController.setLocalChoice(false);
@@ -1253,6 +1408,13 @@
       this.switchTab('vault');
       this.renderVault();
       this.resetIdleTimer();
+
+      // e.g. the home-screen widget asked to open the scanner after unlock.
+      if (this.pendingAfterUnlock) {
+        const fn = this.pendingAfterUnlock;
+        this.pendingAfterUnlock = null;
+        setTimeout(fn, 200);
+      }
     }
 
     lock({ silent = false, reason = 'Vault locked.' } = {}) {
@@ -1264,6 +1426,8 @@
       this.masterPassword = '';
       this.folders = [];
       this.activeTotp = null;
+      this.pendingAfterUnlock = null;
+      this.clearAutofillCache();
       this.closeSheet();
       this.closeDialog();
       this.showLockScreen();
@@ -1298,6 +1462,7 @@
 
       StorageController.wipeScope();
       await this.disableBiometrics({ silent: true });
+        await this.clearAutofillCache();
       this.aesKey = null;
       this.decryptedVault = [];
       this.folders = [];
@@ -1338,6 +1503,7 @@
       await this.loadFolders();
       await this.loadSimpleLoginKey();
       this.renderVault();
+      this.refreshAutofillCache();
       return failed;
     }
 
@@ -1357,6 +1523,7 @@
       }
 
       StorageController.saveEncryptedItems(encrypted);
+      this.refreshAutofillCache();
 
       if (this.currentUid) {
         this.updateSyncIndicator(true);
@@ -1385,12 +1552,8 @@
       if (c === 'trash') return item.isTrashed;
       if (item.isTrashed) return false;
       if (c === 'all') return true;
-      if (c === 'favorites') return !!item.isFavorite;
-      if (c === 'passwords') return item.type === 'login' || item.type === 'passwords';
-      if (c === 'passkeys') return item.type === 'passkeys' || item.type === 'passkey';
-      if (c === 'notes') return item.type === 'note' || item.type === 'notes';
-      if (c === 'cards') return item.type === 'card' || item.type === 'cards';
-      if (c === 'identity') return item.type === 'identity';
+      if (c === 'passwords') return isLoginType(item.type);
+      if (c === 'notes') return isNoteType(item.type);
       if (c.startsWith('folder_')) return item.data && item.data.folderId === c;
       return true;
     }
@@ -1399,21 +1562,16 @@
       const live = this.decryptedVault.filter((i) => !i.isTrashed);
       const set = (id, n) => { const e = $(id); if (e) e.textContent = n; };
       set('c-all', live.length);
-      set('c-fav', live.filter((i) => i.isFavorite).length);
-      set('c-pw', live.filter((i) => i.type === 'login' || i.type === 'passwords').length);
-      set('c-pk', live.filter((i) => i.type === 'passkeys' || i.type === 'passkey').length);
-      set('c-notes', live.filter((i) => i.type === 'note' || i.type === 'notes').length);
-      set('c-cards', live.filter((i) => i.type === 'card' || i.type === 'cards').length);
-      set('c-id', live.filter((i) => i.type === 'identity').length);
-      set('c-trash', this.decryptedVault.filter((i) => i.isTrashed).length);
+      set('c-pw', live.filter((i) => isLoginType(i.type)).length);
+      set('c-notes', live.filter((i) => isNoteType(i.type)).length);
     }
 
     subtitleFor(item) {
       const d = item.data || {};
       switch (item.type) {
         case 'login': case 'passwords': return d.username || d.url || 'Login';
-        case 'passkeys': case 'passkey': return d.relyingParty || d.userHandle || 'Passkey';
         case 'note': case 'notes': return 'Secure note';
+        case 'passkeys': case 'passkey': return d.relyingParty || d.userHandle || 'Passkey';
         case 'card': case 'cards': return d.cardNumber ? `•••• ${String(d.cardNumber).slice(-4)}` : 'Card';
         case 'identity': return d.fullName || d.email || 'Identity';
         default: return '';
@@ -1422,7 +1580,7 @@
 
     renderVault() {
       this.updateCounts();
-      this.renderFolderChips();
+      this.refreshFilterUi();
 
       const list = $('vault-list');
       list.innerHTML = '';
@@ -1456,9 +1614,6 @@
       } else if (this.activeCategory === 'trash') {
         title = 'Trash is empty';
         text = 'Deleted items appear here before being permanently removed.';
-      } else if (this.activeCategory === 'favorites') {
-        title = 'No favourites yet';
-        text = 'Open an item and tap the star to keep it here.';
       } else if (this.activeCategory.startsWith('folder_')) {
         const folder = this.folders.find((f) => f.id === this.activeCategory);
         title = 'Folder is empty';
@@ -1493,7 +1648,6 @@
 
       const tags = el('div', { class: 'row-tags' }, [
         el('span', { class: 'tag', text: meta.label }),
-        item.isFavorite ? el('div', { class: 'star', html: ICONS.star }) : null,
       ]);
 
       return el('div', {
@@ -1557,11 +1711,11 @@
       const d = item.data || {};
       const add = (...args) => body.appendChild(this.fieldCard(...args));
 
-      if (item.type === 'login' || item.type === 'passwords') {
+      if (isLoginType(item.type)) {
         if (d.username) add('Username / Email', d.username);
         if (d.password) add('Password', d.password, { secret: true, mono: true });
         if (d.url) add('Website', d.url);
-        if (d.totpSecret) body.appendChild(await this.totpCard(d.totpSecret));
+        if (d.notes) add('Notes', d.notes, { multiline: true });
       } else if (item.type === 'passkeys' || item.type === 'passkey') {
         if (d.relyingParty) add('Relying Party', d.relyingParty);
         if (d.userHandle) add('User Handle', d.userHandle);
@@ -1609,17 +1763,6 @@
           },
         });
       } else {
-        actions.push({
-          label: item.isFavorite ? 'Remove favourite' : 'Add favourite',
-          icon: ICONS.star,
-          onClick: async () => {
-            item.isFavorite = !item.isFavorite;
-            await this.saveVault();
-            this.renderVault();
-            this.toast(item.isFavorite ? 'Added to favourites.' : 'Removed from favourites.');
-            this.openDetail(item);
-          },
-        });
         actions.push({ label: 'Edit', icon: ICONS.edit, onClick: () => this.openEditor(item) });
         actions.push({
           label: 'Move to trash', icon: ICONS.trash,
@@ -1695,17 +1838,33 @@
 
       const typeField = el('div', { class: 'field' }, [el('label', { text: 'Type' })]);
       const typeSelect = el('select', { class: 'select', style: 'width:100%;' });
-      [['login', 'Login / Password'], ['passkeys', 'Passkey'], ['card', 'Credit Card'], ['note', 'Secure Note'], ['identity', 'Identity']]
-        .forEach(([v, label]) => {
-          const opt = el('option', { text: label });
-          opt.value = v;
-          typeSelect.appendChild(opt);
-        });
-      typeSelect.value = ['login', 'passwords'].includes(state.type) ? 'login'
-        : ['passkeys', 'passkey'].includes(state.type) ? 'passkeys'
-        : ['note', 'notes'].includes(state.type) ? 'note'
-        : ['card', 'cards'].includes(state.type) ? 'card'
-        : state.type;
+      [['login', 'Login / Password'], ['note', 'Secure Note']].forEach(([v, label]) => {
+        const opt = el('option', { text: label });
+        opt.value = v;
+        typeSelect.appendChild(opt);
+      });
+
+      // An item created by an older version may be a passkey, card or identity.
+      // Without a matching <option> the assignment below selects nothing and
+      // saving would rewrite it as a login, destroying its fields.
+      if (existing && isRetiredType(existing.type)) {
+        const retiredLabels = {
+          passkey: 'Passkey', passkeys: 'Passkey',
+          card: 'Credit Card', cards: 'Credit Card',
+          identity: 'Identity',
+        };
+        const opt = el('option', { text: (retiredLabels[existing.type] || existing.type) + ' (no longer offered)' });
+        opt.value = existing.type;
+        typeSelect.appendChild(opt);
+      }
+      if (existing) {
+        typeSelect.value = isLoginType(existing.type) ? 'login'
+          : isNoteType(existing.type) ? 'note'
+          : existing.type;
+      } else {
+        // Adding from inside Notes should give you a note, not a login.
+        typeSelect.value = this.activeCategory === 'notes' ? 'note' : 'login';
+      }
       typeField.appendChild(typeSelect);
 
       const nameInput = el('input', { attrs: { type: 'text', placeholder: 'e.g. GitHub', id: 'ed-name' } });
@@ -1787,7 +1946,10 @@
           mk('ed-user', 'Username / Email', d.username, { placeholder: 'you@example.com' });
           mk('ed-pass', 'Password', d.password, { generate: true, placeholder: '••••••••' });
           mk('ed-url', 'Website', d.url, { placeholder: 'https://example.com' });
-          mk('ed-totp', 'Authenticator Secret (optional)', d.totpSecret, { placeholder: 'Base32 secret' });
+          mk('ed-login-notes', 'Notes (optional)', d.notes, {
+            multiline: true,
+            placeholder: 'Recovery codes, security answers, anything else…',
+          });
         } else if (type === 'passkeys') {
           mk('ed-pk-rp', 'Relying Party / Domain', d.relyingParty, { placeholder: 'github.com' });
           mk('ed-pk-user', 'User Handle', d.userHandle, { placeholder: 'you@example.com' });
@@ -1828,8 +1990,14 @@
           data.username = val('ed-user');
           data.password = val('ed-pass');
           data.url = val('ed-url');
-          const totp = val('ed-totp').replace(/\s/g, '');
-          if (totp) data.totpSecret = totp;
+          const notesEl = $('ed-login-notes');
+          if (notesEl && notesEl.value.trim()) data.notes = notesEl.value.trim();
+
+          // The TOTP field is gone, but an older item may still carry a secret.
+          // Dropping it on the next save would destroy data silently.
+          if (existing && existing.data && existing.data.totpSecret) {
+            data.totpSecret = existing.data.totpSecret;
+          }
         } else if (type === 'passkeys') {
           data.relyingParty = val('ed-pk-rp');
           data.userHandle = val('ed-pk-user');
@@ -2225,6 +2393,7 @@
           });
           if (!ok) return;
           await this.disableBiometrics({ silent: true });
+        await this.clearAutofillCache();
           localStorage.removeItem('cv:biometric:offered');
           await FirebaseSyncEngine.logout();
           StorageController.setLocalChoice(false);
@@ -2236,6 +2405,10 @@
       });
 
       $('set-btn-check-updates').addEventListener('click', () => this.checkUpdates({ silent: false }));
+
+      $('row-autofill').addEventListener('click', () => {
+        if (this.autofill) this.autofill.openSettings();
+      });
 
       const bioToggle = $('set-biometric');
       bioToggle.addEventListener('change', async () => {
@@ -2324,6 +2497,7 @@
 
         StorageController.wipeScope();
         await this.disableBiometrics({ silent: true });
+        await this.clearAutofillCache();
         if (this.currentUid) {
           try { await FirebaseSyncEngine.deleteVault(this.currentUid); }
           catch (err) { this.toast(this.syncErrorText(err)); }
@@ -2487,6 +2661,10 @@
       $('set-auto-lock').value = StorageController.getAutoLockMinutes();
       $('set-clipboard').value = StorageController.getClipboardDelay();
       this.refreshBiometricState();
+
+      const section = $('section-autofill');
+      if (section) section.hidden = !this.autofill;
+      this.refreshAutofillState();
     }
 
     async refreshVersionLabels() {
