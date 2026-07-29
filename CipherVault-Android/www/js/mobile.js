@@ -411,50 +411,31 @@
     // what stops anyone in the middle substituting their own. We seal the
     // master password to that key and post only the ciphertext.
 
+    /**
+     * Entry point for "Unlock a PC" (the Tools card) and the home-screen
+     * widget. Opens the camera straight away and, once a valid code is scanned,
+     * unlocks the computer with no extra confirmation step - the biometric that
+     * got here is the gate.
+     */
     async toolQrUnlock() {
-      const body = el('div', { class: 'tool-body' });
-
-      const explain = el('p', { class: 'row-desc', style: 'line-height:1.55;' , text:
-        'On your computer, open CipherVault and press “Unlock with my phone” on the lock screen. Then scan the code it shows.' });
-
-      const guard = (title, text) => {
-        body.appendChild(el('div', { class: 'empty' }, [
-          el('div', { class: 'empty-icon', html: ICONS.warn }),
-          el('h3', { text: title }),
-          el('p', { text }),
-        ]));
-        this.openSheet({ title: 'Unlock a PC', body });
-      };
-
-      if (!this.aesKey) {
-        return guard('Vault is locked', 'Unlock your vault on this phone first — it is what authorises the computer.');
-      }
-      if (!this.currentUid) {
-        return guard('Not signed in', 'QR unlock needs both devices signed in to the same CipherVault account.');
-      }
-      if (!this.masterPassword) {
-        return guard('Unlock again first', 'For this to work, unlock this phone with your master password or biometrics once more, then try again.');
-      }
-      if (!isNative || !CapPlugins.CapacitorBarcodeScanner) {
-        return guard('Camera unavailable', 'Scanning needs the CipherVault Android app — it is not available in a browser.');
-      }
-
-      const status = el('p', { class: 'row-desc' });
-
-      const scanBtn = el('button', {
-        class: 'btn btn-primary btn-block',
-        text: 'Scan the code',
-        on: { click: () => this.scanForPcUnlock(status, scanBtn) },
+      const fail = (title, text) => this.dialog({
+        title,
+        icon: ICONS.warn,
+        body: text,
+        actions: [{ label: 'OK', style: 'btn-primary' }],
       });
 
-      body.append(explain, scanBtn, status);
-      this.openSheet({ title: 'Unlock a PC', body });
-    }
+      if (!this.aesKey || !this.masterPassword) {
+        return fail('Vault is locked', 'Unlock your vault on this phone first — it is what authorises the computer.');
+      }
+      if (!this.currentUid) {
+        return fail('Not signed in', 'QR unlock needs both devices signed in to the same CipherVault account.');
+      }
+      if (!isNative || !CapPlugins.CapacitorBarcodeScanner) {
+        return fail('Camera unavailable', 'Scanning needs the CipherVault Android app — it is not available in a browser.');
+      }
 
-    async scanForPcUnlock(status, button) {
-      button.disabled = true;
-      status.textContent = '';
-
+      // Open the camera immediately.
       let scanned;
       try {
         const result = await CapPlugins.CapacitorBarcodeScanner.scanBarcode({
@@ -464,36 +445,21 @@
         });
         scanned = result && result.ScanResult;
       } catch (err) {
-        button.disabled = false;
         // Backing out of the scanner is not an error worth shouting about.
         if (err && /cancel/i.test(err.message || '')) return;
-        status.textContent = 'Could not open the camera: ' + ((err && err.message) || 'unknown error');
-        return;
+        return fail('Camera error', 'Could not open the camera: ' + ((err && err.message) || 'unknown error'));
       }
-
-      button.disabled = false;
       if (!scanned) return;
 
       let session;
       try {
         session = LinkSessionEngine.parseQrPayload(scanned);
       } catch (err) {
-        status.textContent = err.message;
-        return;
+        return fail("That code didn't work", err.message);
       }
 
-      const approved = await this.confirm({
-        title: 'Unlock your computer?',
-        body: 'This sends your master password to that computer, encrypted so only it can read it. Only approve this if you are looking at your own screen right now.',
-        confirmLabel: 'Unlock it',
-        icon: ICONS.shield,
-      });
-      if (!approved) {
-        status.textContent = 'Cancelled.';
-        return;
-      }
-
-      status.textContent = 'Approving…';
+      // No confirmation: scan then unlock. The user asked for this - the
+      // biometric that reached the scanner is the authorisation.
       try {
         const response = await LinkSessionEngine.buildResponse(
           session.sessionId,
@@ -502,20 +468,18 @@
         );
         await FirebaseSyncEngine.postLinkResponse(this.currentUid, session.sessionId, response);
 
-        status.textContent = '';
         this.haptic();
-        this.closeSheet();
         this.dialog({
           title: 'Computer unlocked',
           icon: ICONS.check,
-          body: 'Your vault should now be open on that computer. The code you scanned is already used up and cannot be reused.',
+          body: 'Your vault is now open on that computer. The code you scanned is used up and cannot be reused.',
           actions: [{ label: 'Done', style: 'btn-primary' }],
         });
       } catch (err) {
         console.error('QR approval failed:', err);
-        status.textContent = (err && err.code === 'permission-denied')
+        return fail('Could not reach your computer', (err && err.code === 'permission-denied')
           ? 'Blocked by Firestore rules — redeploy firestore.rules.'
-          : 'Could not reach your computer: ' + ((err && err.message) || 'unknown error');
+          : ((err && err.message) || 'Unknown error. Try again.'));
       }
     }
 

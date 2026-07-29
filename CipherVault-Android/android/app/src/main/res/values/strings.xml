@@ -4,4 +4,6 @@
     <string name="title_activity_main">CipherVault</string>
     <string name="package_name">com.ciphervault.app</string>
     <string name="custom_url_scheme">com.ciphervault.app</string>
+    <string name="widget_scanner_description">Scan a QR code to unlock CipherVault on a PC</string>
+    <string name="widget_scanner_label">Unlock a PC</string>
 </resources>

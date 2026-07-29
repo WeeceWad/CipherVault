@@ -1,31 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The whole widget is one tappable button showing the QR-scan glyph. -->
+<!-- The whole widget is one tappable tile showing just the QR-scanner image. -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/scanner_widget_root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:padding="4dp">
 
-    <LinearLayout
+    <ImageView
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:orientation="vertical"
-        android:gravity="center"
-        android:background="@drawable/widget_background">
-
-        <ImageView
-            android:layout_width="30dp"
-            android:layout_height="30dp"
-            android:src="@drawable/ic_scan"
-            android:contentDescription="Unlock a PC" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="3dp"
-            android:text="Unlock PC"
-            android:textColor="#F8FAFC"
-            android:textSize="10sp"
-            android:maxLines="1" />
-    </LinearLayout>
+        android:background="@drawable/widget_background"
+        android:padding="14dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_scan"
+        android:contentDescription="Scan a QR code to unlock a PC" />
 </FrameLayout>

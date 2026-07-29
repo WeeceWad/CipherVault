@@ -1,6 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  QR-code scanner icon: a viewfinder frame (four corner brackets) around a
+  small QR glyph, with a scan line across the middle. Reads unmistakably as
+  "point the camera at a QR code".
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp" android:height="24dp"
     android:viewportWidth="24" android:viewportHeight="24">
+
+    <!-- Corner brackets -->
     <path android:fillColor="#3B82F6"
-        android:pathData="M3,11h8V3H3v8zM5,5h4v4H5V5zM3,21h8v-8H3v8zM5,15h4v4H5v-4zM13,3v8h8V3h-8zM19,9h-4V5h4v4zM13,13h2v2h-2v-2zM15,15h2v2h-2v-2zM17,13h2v2h-2v-2zM13,17h2v2h-2v-2zM15,19h2v2h-2v-2zM17,17h2v2h-2v-2zM19,15h2v2h-2v-2zM19,19h2v2h-2v-2z" />
+        android:pathData="M3,3 H10 V5 H5 V10 H3 Z" />
+    <path android:fillColor="#3B82F6"
+        android:pathData="M21,3 H14 V5 H19 V10 H21 Z" />
+    <path android:fillColor="#3B82F6"
+        android:pathData="M3,21 H10 V19 H5 V14 H3 Z" />
+    <path android:fillColor="#3B82F6"
+        android:pathData="M21,21 H14 V19 H19 V14 H21 Z" />
+
+    <!-- QR glyph in the centre -->
+    <path android:fillColor="#3B82F6"
+        android:pathData="M8,8 h3 v3 h-3 z M13,8 h3 v3 h-3 z M8,13 h3 v3 h-3 z M14,14 h2 v2 h-2 z" />
 </vector>

@@ -83,6 +83,7 @@
              plain launcher and holds nothing sensitive. -->
         <receiver
             android:name=".ScannerWidgetProvider"
+            android:label="@string/widget_scanner_label"
             android:exported="false">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
