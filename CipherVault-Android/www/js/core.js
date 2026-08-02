@@ -230,6 +230,87 @@ const isLoginType = (t) => LOGIN_TYPES.includes(t);
 const isNoteType = (t) => NOTE_TYPES.includes(t);
 const isRetiredType = (t) => RETIRED_TYPES.includes(t);
 
+// --- IMAGE UTILITY (attachments on secure notes) ---
+//
+// Note images are stored as data-URI strings inside the note's encrypted
+// payload, so they are protected exactly like the rest of the vault. The
+// catch is size: the whole vault syncs as ONE Firestore document capped at
+// ~1 MiB, so a raw phone photo (several MB) would silently break sync for the
+// entire account. Every image is therefore downscaled and re-encoded before
+// it is ever stored — a full-resolution original is never kept.
+class ImageUtil {
+  static MAX_DIMENSION = 1280;   // longest side, px
+  static JPEG_QUALITY = 0.7;
+  // Hard ceiling per image AFTER compression. A photo that still exceeds this
+  // is rejected rather than allowed to threaten the whole vault's sync.
+  static MAX_STORED_BYTES = 700 * 1024;
+  // Keep total vault well under Firestore's 1 MiB so text + keys still fit.
+  static VAULT_SOFT_LIMIT = 800 * 1024;
+
+  static isImageFile(file) {
+    return !!file && typeof file.type === "string" && file.type.startsWith("image/");
+  }
+
+  /**
+   * Reads an image File, downscales it and returns a JPEG data URI.
+   * @returns {Promise<string>} the compressed data URL
+   */
+  static async fileToDataUrl(file) {
+    if (!this.isImageFile(file)) throw new Error("That file isn't an image.");
+
+    const sourceUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error("Could not read the image."));
+      reader.readAsDataURL(file);
+    });
+
+    const img = await new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error("That image could not be decoded."));
+      image.src = sourceUrl;
+    });
+
+    let { width, height } = img;
+    if (width > this.MAX_DIMENSION || height > this.MAX_DIMENSION) {
+      const scale = this.MAX_DIMENSION / Math.max(width, height);
+      width = Math.round(width * scale);
+      height = Math.round(height * scale);
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    // Flatten onto white: JPEG has no alpha, and transparent PNGs would
+    // otherwise render with black backgrounds.
+    ctx.fillStyle = "#FFFFFF";
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(img, 0, 0, width, height);
+
+    const dataUrl = canvas.toDataURL("image/jpeg", this.JPEG_QUALITY);
+
+    if (this.dataUrlBytes(dataUrl) > this.MAX_STORED_BYTES) {
+      throw new Error("That image is too large even after compression. Try a smaller one.");
+    }
+    return dataUrl;
+  }
+
+  /** Approximate decoded byte size of a data URL. */
+  static dataUrlBytes(dataUrl) {
+    const comma = dataUrl.indexOf(",");
+    const b64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+    // 4 base64 chars -> 3 bytes.
+    return Math.floor(b64.length * 3 / 4);
+  }
+
+  static formatBytes(bytes) {
+    if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+    return Math.max(1, Math.round(bytes / 1024)) + " KB";
+  }
+}
+
 // --- TOTP AUTHENTICATOR ENGINE (RFC 6238) ---
 class TOTPEngine {
   static async generateTOTP(secretBase32, period = 30, digits = 6) {

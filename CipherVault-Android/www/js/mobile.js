@@ -1629,6 +1629,28 @@
 
     // ------------------------------------------------------------- detail
 
+    /** Detail card of note image thumbnails; tap opens a full-screen viewer. */
+    noteImagesCard(images) {
+      const grid = el('div', { class: 'note-image-strip' });
+      images.forEach((src) => {
+        const img = el('img', { class: 'note-image-thumb', attrs: { src, alt: 'Note image' } });
+        img.addEventListener('click', () => this.openImageViewer(src));
+        grid.appendChild(img);
+      });
+      return el('div', { class: 'field-card' }, [
+        el('label', { text: 'Images' }),
+        grid,
+      ]);
+    }
+
+    openImageViewer(src) {
+      const overlay = el('div', {
+        class: 'image-viewer',
+        on: { click: () => overlay.remove() },
+      }, [el('img', { attrs: { src } })]);
+      document.body.appendChild(overlay);
+    }
+
     fieldCard(label, value, { secret = false, mono = false, multiline = false } = {}) {
       const valueNode = el('span', {
         class: `field-value${mono ? ' mono' : ''}${multiline ? ' multiline' : ''}`,
@@ -1685,6 +1707,7 @@
         if (d.userHandle) add('User Handle', d.userHandle);
       } else if (item.type === 'note' || item.type === 'notes') {
         if (d.content) add('Note', d.content, { multiline: true });
+        if (Array.isArray(d.images) && d.images.length) body.appendChild(this.noteImagesCard(d.images));
       } else if (item.type === 'card' || item.type === 'cards') {
         if (d.cardholder) add('Cardholder', d.cardholder);
         if (d.cardNumber) add('Card Number', d.cardNumber, { secret: true, mono: true });
@@ -1794,8 +1817,75 @@
 
     // ------------------------------------------------------------- editor
 
+    /**
+     * The note image row: thumbnails with a remove button, an "Add image"
+     * button, and a running size readout. Images are compressed by the shared
+     * ImageUtil before being staged in this.editorImages.
+     */
+    buildNoteImagesField() {
+      const field = el('div', { class: 'field' }, [el('label', { text: 'Images' })]);
+      const strip = el('div', { class: 'note-image-strip' });
+      const hint = el('span', { class: 'note-image-hint' });
+      const input = el('input', { attrs: { type: 'file', accept: 'image/*', multiple: '' }, style: 'display:none;' });
+
+      const render = () => {
+        strip.innerHTML = '';
+        (this.editorImages || []).forEach((src, index) => {
+          const cell = el('div', { class: 'note-image-cell' });
+          const img = el('img', { attrs: { src, alt: 'Note image' } });
+          const del = el('button', {
+            class: 'note-image-remove', attrs: { type: 'button', 'aria-label': 'Remove image' }, text: '×',
+            on: { click: () => { this.editorImages.splice(index, 1); render(); } },
+          });
+          cell.append(img, del);
+          strip.appendChild(cell);
+        });
+        const total = (this.editorImages || []).reduce((n, s) => n + ImageUtil.dataUrlBytes(s), 0);
+        hint.textContent = this.editorImages && this.editorImages.length
+          ? `${this.editorImages.length} image(s), ${ImageUtil.formatBytes(total)}. Compressed and encrypted with the note.`
+          : 'Images are compressed and encrypted with the note.';
+      };
+
+      const addBtn = el('button', {
+        class: 'btn btn-ghost', attrs: { type: 'button' }, text: 'Add Image',
+        on: { click: () => input.click() },
+      });
+
+      input.addEventListener('change', async (e) => {
+        const files = Array.from(e.target.files || []);
+        e.target.value = '';
+        for (const file of files) {
+          try {
+            const dataUrl = await ImageUtil.fileToDataUrl(file);
+            this.editorImages = this.editorImages || [];
+            const projected = this.decryptedVault.reduce(
+              (n, it) => n + (this._editingId === it.id ? 0 : JSON.stringify(it.data).length), 0
+            ) + this.editorImages.reduce((n, s) => n + s.length, 0) + dataUrl.length;
+            if (projected > ImageUtil.VAULT_SOFT_LIMIT) {
+              this.toast('Vault is near its size limit — remove some images first.');
+              continue;
+            }
+            this.editorImages.push(dataUrl);
+          } catch (err) {
+            this.toast(err.message);
+          }
+        }
+        render();
+      });
+
+      field.append(strip, addBtn, input, hint);
+      render();
+      return field;
+    }
+
     openEditor(existing) {
       if (!this.aesKey) return;
+
+      // Staged copy of the note's images; commits only on save.
+      this._editingId = existing ? existing.id : null;
+      this.editorImages = existing && Array.isArray(existing.data.images)
+        ? existing.data.images.slice()
+        : [];
 
       const form = el('form', { class: 'editor-form' });
       const state = { type: existing ? existing.type : 'login' };
@@ -1919,6 +2009,7 @@
           mk('ed-pk-user', 'User Handle', d.userHandle, { placeholder: 'you@example.com' });
         } else if (type === 'note') {
           mk('ed-note', 'Secure Note', d.content, { multiline: true, placeholder: 'Write something private…' });
+          dynamic.appendChild(this.buildNoteImagesField());
         } else if (type === 'card') {
           mk('ed-card-name', 'Cardholder Name', d.cardholder, { placeholder: 'Jane Doe' });
           mk('ed-card-num', 'Card Number', d.cardNumber, { placeholder: '4532 •••• •••• 8921' });
@@ -1967,6 +2058,7 @@
           data.userHandle = val('ed-pk-user');
         } else if (type === 'note') {
           data.content = $('ed-note') ? $('ed-note').value : '';
+          if (this.editorImages && this.editorImages.length) data.images = this.editorImages.slice();
         } else if (type === 'card') {
           data.cardholder = val('ed-card-name');
           data.cardNumber = val('ed-card-num');
@@ -2790,6 +2882,7 @@
       SimpleLoginClient,
       BreachScannerEngine,
       LinkSessionEngine,
+      ImageUtil,
     };
   }
 

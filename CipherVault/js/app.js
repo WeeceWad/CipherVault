@@ -230,6 +230,87 @@
   const isNoteType = (t) => NOTE_TYPES.includes(t);
   const isRetiredType = (t) => RETIRED_TYPES.includes(t);
 
+  // --- IMAGE UTILITY (attachments on secure notes) ---
+  //
+  // Note images are stored as data-URI strings inside the note's encrypted
+  // payload, so they are protected exactly like the rest of the vault. The
+  // catch is size: the whole vault syncs as ONE Firestore document capped at
+  // ~1 MiB, so a raw phone photo (several MB) would silently break sync for the
+  // entire account. Every image is therefore downscaled and re-encoded before
+  // it is ever stored — a full-resolution original is never kept.
+  class ImageUtil {
+    static MAX_DIMENSION = 1280;   // longest side, px
+    static JPEG_QUALITY = 0.7;
+    // Hard ceiling per image AFTER compression. A photo that still exceeds this
+    // is rejected rather than allowed to threaten the whole vault's sync.
+    static MAX_STORED_BYTES = 700 * 1024;
+    // Keep total vault well under Firestore's 1 MiB so text + keys still fit.
+    static VAULT_SOFT_LIMIT = 800 * 1024;
+
+    static isImageFile(file) {
+      return !!file && typeof file.type === "string" && file.type.startsWith("image/");
+    }
+
+    /**
+     * Reads an image File, downscales it and returns a JPEG data URI.
+     * @returns {Promise<string>} the compressed data URL
+     */
+    static async fileToDataUrl(file) {
+      if (!this.isImageFile(file)) throw new Error("That file isn't an image.");
+
+      const sourceUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error("Could not read the image."));
+        reader.readAsDataURL(file);
+      });
+
+      const img = await new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error("That image could not be decoded."));
+        image.src = sourceUrl;
+      });
+
+      let { width, height } = img;
+      if (width > this.MAX_DIMENSION || height > this.MAX_DIMENSION) {
+        const scale = this.MAX_DIMENSION / Math.max(width, height);
+        width = Math.round(width * scale);
+        height = Math.round(height * scale);
+      }
+
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      // Flatten onto white: JPEG has no alpha, and transparent PNGs would
+      // otherwise render with black backgrounds.
+      ctx.fillStyle = "#FFFFFF";
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(img, 0, 0, width, height);
+
+      const dataUrl = canvas.toDataURL("image/jpeg", this.JPEG_QUALITY);
+
+      if (this.dataUrlBytes(dataUrl) > this.MAX_STORED_BYTES) {
+        throw new Error("That image is too large even after compression. Try a smaller one.");
+      }
+      return dataUrl;
+    }
+
+    /** Approximate decoded byte size of a data URL. */
+    static dataUrlBytes(dataUrl) {
+      const comma = dataUrl.indexOf(",");
+      const b64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+      // 4 base64 chars -> 3 bytes.
+      return Math.floor(b64.length * 3 / 4);
+    }
+
+    static formatBytes(bytes) {
+      if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+      return Math.max(1, Math.round(bytes / 1024)) + " KB";
+    }
+  }
+
   // --- TOTP AUTHENTICATOR ENGINE (RFC 6238) ---
   class TOTPEngine {
     static async generateTOTP(secretBase32, period = 30, digits = 6) {
@@ -2535,6 +2616,9 @@
         if (item.data.userHandle) body.appendChild(this.createFieldCard("User Handle / Account", item.data.userHandle, true));
       } else if (item.type === "note" || item.type === "notes") {
         if (item.data.content) body.appendChild(this.createFieldCard("Confidential Note", item.data.content, true));
+        if (Array.isArray(item.data.images) && item.data.images.length) {
+          body.appendChild(this.createNoteImageCard(item.data.images));
+        }
       } else if (item.type === "card" || item.type === "cards") {
         if (item.data.cardholder) body.appendChild(this.createFieldCard("Cardholder Name", item.data.cardholder, true));
         if (item.data.cardNumber) body.appendChild(this.createFieldCard("Card Number", item.data.cardNumber, true, true));
@@ -2949,6 +3033,36 @@
       });
     }
 
+    /** A detail card showing note image thumbnails; click opens a lightbox. */
+    createNoteImageCard(images) {
+      const card = document.createElement("div");
+      card.className = "detail-field-card";
+      card.innerHTML = `<div class="field-label-row"><label>Images</label></div>`;
+
+      const grid = document.createElement("div");
+      grid.className = "note-image-strip";
+      images.forEach((src) => {
+        const img = document.createElement("img");
+        img.src = src;
+        img.alt = "Note image";
+        img.className = "note-image-thumb";
+        img.addEventListener("click", () => this.openImageLightbox(src));
+        grid.appendChild(img);
+      });
+      card.appendChild(grid);
+      return card;
+    }
+
+    openImageLightbox(src) {
+      const overlay = document.createElement("div");
+      overlay.className = "image-lightbox";
+      const img = document.createElement("img");
+      img.src = src;
+      overlay.appendChild(img);
+      overlay.addEventListener("click", () => overlay.remove());
+      document.body.appendChild(overlay);
+    }
+
     createFieldCard(label, value, allowCopy = true, isPassword = false) {
       const card = document.createElement("div");
       card.className = "detail-field-card";
@@ -3054,8 +3168,15 @@
           setVal("ed-id-phone", itemToEdit.data.phone);
           setVal("ed-id-address", itemToEdit.data.address);
         }, 10);
+
+        // Stage a copy of any existing note images so edits/removals only
+        // commit on save.
+        this.editorImages = Array.isArray(itemToEdit.data.images)
+          ? itemToEdit.data.images.slice()
+          : [];
       } else {
         this.editingItemId = null;
+        this.editorImages = [];
         document.getElementById("editor-modal-title").textContent = "New Vault Item";
         document.getElementById("editor-name").value = "";
 
@@ -3071,6 +3192,76 @@
 
         this.renderDynamicEditorFields(typeSelect.value);
       }
+    }
+
+    /**
+     * Wires up the note image strip: add (compressed), remove, and a running
+     * size readout. The images live on this.editorImages while the editor is
+     * open and are written into the item on save.
+     */
+    setupNoteImageEditor() {
+      const strip = document.getElementById("ed-note-images");
+      const input = document.getElementById("ed-note-image-input");
+      const addBtn = document.getElementById("btn-add-note-image");
+      const hint = document.getElementById("ed-note-image-hint");
+      if (!strip || !input || !addBtn) return;
+
+      const render = () => {
+        strip.innerHTML = "";
+        (this.editorImages || []).forEach((src, index) => {
+          const cell = document.createElement("div");
+          cell.className = "note-image-cell";
+          const img = document.createElement("img");
+          img.src = src;
+          img.alt = "Note image";
+          const del = document.createElement("button");
+          del.type = "button";
+          del.className = "note-image-remove";
+          del.textContent = "×";
+          del.title = "Remove image";
+          del.addEventListener("click", () => {
+            this.editorImages.splice(index, 1);
+            render();
+          });
+          cell.appendChild(img);
+          cell.appendChild(del);
+          strip.appendChild(cell);
+        });
+
+        if (hint) {
+          const total = (this.editorImages || []).reduce((n, s) => n + ImageUtil.dataUrlBytes(s), 0);
+          hint.textContent = this.editorImages && this.editorImages.length
+            ? `${this.editorImages.length} image(s), ${ImageUtil.formatBytes(total)}. Compressed and encrypted with the note.`
+            : "Images are compressed and encrypted with the note.";
+        }
+      };
+
+      addBtn.addEventListener("click", () => input.click());
+
+      input.addEventListener("change", async (e) => {
+        const files = Array.from(e.target.files || []);
+        e.target.value = "";
+        for (const file of files) {
+          try {
+            const dataUrl = await ImageUtil.fileToDataUrl(file);
+            this.editorImages = this.editorImages || [];
+
+            const projected = this.decryptedVault.reduce((n, it) => n + (it.id === this.editingItemId ? 0 : JSON.stringify(it.data).length), 0)
+              + this.editorImages.reduce((n, s) => n + s.length, 0) + dataUrl.length;
+            if (projected > ImageUtil.VAULT_SOFT_LIMIT) {
+              this.showToast("Vault is near its size limit — remove some images first.");
+              continue;
+            }
+            this.editorImages.push(dataUrl);
+          } catch (err) {
+            this.showToast(err.message);
+          }
+        }
+        render();
+      });
+
+      // Draw whatever is already staged (populated by openItemEditor).
+      render();
     }
 
     renderDynamicEditorFields(type) {
@@ -3134,7 +3325,15 @@
       } else if (type === "note" || type === "notes") {
         container.innerHTML = `
           <div class="field-group"><label>Confidential Secure Note</label><textarea id="ed-note" rows="5" placeholder="Write secure notes..."></textarea></div>
+          <div class="field-group">
+            <label>Images</label>
+            <div id="ed-note-images" class="note-image-strip"></div>
+            <button type="button" class="btn-secondary" id="btn-add-note-image">Add Image</button>
+            <input type="file" id="ed-note-image-input" accept="image/*" multiple class="hidden">
+            <span class="note-image-hint" id="ed-note-image-hint">Images are compressed and encrypted with the note.</span>
+          </div>
         `;
+        this.setupNoteImageEditor();
       } else if (type === "card" || type === "cards") {
         container.innerHTML = `
           <div class="field-group"><label>Cardholder Name</label><input type="text" id="ed-card-name" placeholder="John Doe"></div>
@@ -3191,6 +3390,7 @@
         dataObj.userHandle = (document.getElementById("ed-pk-user")?.value || "").trim();
       } else if (type === "note" || type === "notes") {
         dataObj.content = document.getElementById("ed-note")?.value || "";
+        if (this.editorImages && this.editorImages.length) dataObj.images = this.editorImages.slice();
       } else if (type === "card" || type === "cards") {
         dataObj.cardholder = (document.getElementById("ed-card-name")?.value || "").trim();
         dataObj.cardNumber = (document.getElementById("ed-card-num")?.value || "").trim();
@@ -3426,6 +3626,7 @@
       FirebaseSyncEngine,
       PasswordHealthEngine,
       LinkSessionEngine,
+      ImageUtil,
     };
     return instance;
   }

@@ -209,5 +209,11 @@ node scripts/check-parity.js
   host something else on that account.
 - **Anyone holding your unlocked phone can unlock your computers** via QR.
   Inherent to that feature; the approval prompt is the guard.
+- **Note images** are downscaled (longest side 1280px, JPEG) and stored inside
+  the note's encrypted payload. Because the whole vault syncs as one Firestore
+  document capped at ~1 MiB, the editor compresses every image, rejects any that
+  is still too big, and warns as the vault approaches the limit. Keep image use
+  modest — this is for the odd recovery-code screenshot or document scan, not a
+  photo album.
 - Passkey items store metadata only; they are notes about a passkey, not usable
   WebAuthn credentials.
