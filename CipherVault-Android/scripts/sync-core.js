@@ -90,6 +90,13 @@ function main() {
     '// --- FIREBASE CLOUD SYNC ENGINE ---'
   );
 
+  // The QR-unlock handshake, so the extension can be unlocked from the phone.
+  const linkEngine = extract(
+    source,
+    '// --- QR UNLOCK / DEVICE LINK ENGINE ---',
+    '// --- MAIN APPLICATION CONTROLLER ---'
+  );
+
   console.log('Syncing shared engine layer from CipherVault/js/app.js');
 
   let stale = false;
@@ -102,6 +109,11 @@ function main() {
     path.join(ROOT, 'CipherVault-Extension', 'js', 'crypto.js'),
     BANNER('CipherVault Cryptographic Core Engine (browser extension)') + cryptoOnly,
     'crypto only'
+  );
+  stale |= writeIfChanged(
+    path.join(ROOT, 'CipherVault-Extension', 'js', 'link.js'),
+    BANNER('CipherVault QR unlock engine (browser extension)') + linkEngine,
+    'link engine'
   );
 
   if (CHECK_ONLY && stale) {

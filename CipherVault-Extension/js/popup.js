@@ -69,6 +69,34 @@ class FirebaseSyncEngine {
       isProvisioned: typeof data.salt === "string" && typeof data.hash === "string",
     };
   }
+
+  // --- QR unlock transport (same as the desktop app) ---
+  // Only ever carries ephemeral public keys and a ciphertext.
+
+  static _linkDoc(uid, sessionId) {
+    return firebase.firestore().collection("users").doc(uid)
+      .collection("linkSessions").doc(sessionId);
+  }
+
+  /** Waits for the phone to approve; returns an unsubscribe fn. */
+  static watchLinkSession(uid, sessionId, onResponse, onError) {
+    if (typeof firebase === "undefined" || !uid) return () => {};
+    return this._linkDoc(uid, sessionId).onSnapshot(
+      (doc) => {
+        if (!doc.exists) return;
+        const d = doc.data() || {};
+        if (typeof d.pk === "string" && typeof d.ct === "string") {
+          onResponse({ publicKey: d.pk, ciphertext: d.ct });
+        }
+      },
+      (err) => { if (onError) onError(err); }
+    );
+  }
+
+  static async deleteLinkSession(uid, sessionId) {
+    if (typeof firebase === "undefined" || !uid || !sessionId) return;
+    try { await this._linkDoc(uid, sessionId).delete(); } catch (e) { /* best effort */ }
+  }
 }
 
 /**
@@ -231,6 +259,7 @@ class PopupController {
 
   render() {
     if (!this.firebaseUser) {
+      this.stopQrUnlock();
       this.setView("view-connect");
       return;
     }
@@ -238,6 +267,7 @@ class PopupController {
     const email = this.firebaseUser.email || "this account";
 
     if (!this.vaultRecord || !this.vaultRecord.isProvisioned) {
+      this.stopQrUnlock();
       const label = document.getElementById("no-vault-account");
       if (label) label.textContent = email;
       this.setView("view-no-vault");
@@ -252,11 +282,162 @@ class PopupController {
       if (this.syncError) this.showError("unlock-error", this.syncError);
       else this.hideError("unlock-error");
       document.getElementById("master-password")?.focus();
+      this.startQrUnlock();
       return;
     }
 
+    // Unlocked: no QR needed.
+    this.stopQrUnlock();
+
     this.setView("view-vault");
+    // Learn what site the user is on so matching logins can be surfaced.
+    this.refreshCurrentHost().then(() => {
+      this.renderVault(document.getElementById("search-input")?.value || "");
+    });
     this.renderVault(document.getElementById("search-input")?.value || "");
+  }
+
+  // ---------- QR unlock (scan with the phone) ----------
+
+  async startQrUnlock() {
+    if (!this.uid) return;
+    if (typeof qrcode === "undefined" || typeof LinkSessionEngine === "undefined") return;
+    if (this.qrSession) return;   // already running
+    await this.rotateQrSession();
+  }
+
+  async rotateQrSession() {
+    this.stopQrTimers();
+    if (this.qrUnsub) { try { this.qrUnsub(); } catch (e) {} this.qrUnsub = null; }
+    if (this.qrSession) FirebaseSyncEngine.deleteLinkSession(this.uid, this.qrSession.sessionId);
+    this.qrSession = null;
+    this.qrConsuming = false;
+
+    let session;
+    try {
+      session = await LinkSessionEngine.createSession();
+    } catch (e) {
+      return;
+    }
+    this.qrSession = session;
+    this.renderQr(session.qrPayload);
+
+    this.qrUnsub = FirebaseSyncEngine.watchLinkSession(
+      this.uid,
+      session.sessionId,
+      (resp) => this.handleQrResponse(resp),
+      (err) => {
+        const hint = document.getElementById("qr-hint");
+        if (hint) {
+          hint.textContent = (err && err.code === "permission-denied")
+            ? "Blocked by Firestore rules — redeploy firestore.rules."
+            : "Lost connection to the cloud.";
+        }
+      }
+    );
+
+    // Rotate before the code goes stale, so a photographed one is useless.
+    const ttl = LinkSessionEngine.SESSION_TTL_MS;
+    let remaining = ttl;
+    const bar = document.getElementById("qr-timer-bar");
+    if (bar) bar.style.width = "100%";
+    this.qrTicker = setInterval(() => {
+      remaining -= 1000;
+      if (bar) bar.style.width = Math.max(0, (remaining / ttl) * 100) + "%";
+      if (remaining <= 0) this.rotateQrSession();
+    }, 1000);
+  }
+
+  async handleQrResponse(response) {
+    if (!this.qrSession || this.qrConsuming) return;
+    this.qrConsuming = true;
+    const sessionId = this.qrSession.sessionId;
+
+    try {
+      if (LinkSessionEngine.isExpired(this.qrSession.createdAt)) {
+        throw new Error("That code had expired. Scan the new one.");
+      }
+      const masterPassword = await LinkSessionEngine.openResponse(this.qrSession.keyPair, sessionId, response);
+      // unlockVault verifies the password against the stored hash, so a phone
+      // cannot force it open with the wrong one.
+      await this.unlockVault(masterPassword);
+      this.stopQrUnlock();
+      this.render();
+    } catch (err) {
+      this.showError("unlock-error", err.message || "Phone unlock failed.");
+      this.qrConsuming = false;
+    } finally {
+      FirebaseSyncEngine.deleteLinkSession(this.uid, sessionId);
+    }
+  }
+
+  renderQr(payload) {
+    const canvas = document.getElementById("qr-canvas");
+    if (!canvas || typeof qrcode === "undefined") return;
+    const qr = qrcode(0, "M");
+    qr.addData(payload);
+    qr.make();
+
+    const count = qr.getModuleCount();
+    const size = canvas.width;
+    const quiet = 2;
+    const scale = size / (count + quiet * 2);
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#f8fafc";
+    ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = "#0f172a";
+    for (let r = 0; r < count; r++) {
+      for (let c = 0; c < count; c++) {
+        if (qr.isDark(r, c)) {
+          ctx.fillRect(Math.round((c + quiet) * scale), Math.round((r + quiet) * scale), Math.ceil(scale), Math.ceil(scale));
+        }
+      }
+    }
+  }
+
+  stopQrTimers() {
+    if (this.qrTicker) clearInterval(this.qrTicker);
+    this.qrTicker = null;
+  }
+
+  stopQrUnlock() {
+    this.stopQrTimers();
+    if (this.qrUnsub) { try { this.qrUnsub(); } catch (e) {} this.qrUnsub = null; }
+    if (this.qrSession) {
+      FirebaseSyncEngine.deleteLinkSession(this.uid, this.qrSession.sessionId);
+      this.qrSession = null;
+    }
+  }
+
+  /** The registrable host of the active tab, e.g. "bet365.com". */
+  async refreshCurrentHost() {
+    this.currentHost = "";
+    if (!ext || !ext.tabs) return;
+    try {
+      const tabs = await ext.tabs.query({ active: true, currentWindow: true });
+      const url = tabs && tabs[0] && tabs[0].url;
+      this.currentHost = PopupController.hostFromUrl(url);
+    } catch (e) { /* activeTab not granted on this page (about:, store, …) */ }
+  }
+
+  static hostFromUrl(url) {
+    if (!url) return "";
+    try {
+      const u = new URL(url.includes("://") ? url : "https://" + url);
+      return u.hostname.replace(/^www\./, "").toLowerCase();
+    } catch (e) {
+      return "";
+    }
+  }
+
+  /** True when a saved login's URL is on the same registrable domain. */
+  static loginMatchesHost(login, host) {
+    if (!host) return false;
+    const loginHost = PopupController.hostFromUrl((login.data && login.data.url) || "");
+    if (!loginHost) return false;
+    // Tolerant both ways: account.bet365.com should match bet365.com and vice
+    // versa, without matching unrelated hosts.
+    return loginHost === host || loginHost.endsWith("." + host) || host.endsWith("." + loginHost);
   }
 
   // ---------- unlock ----------
@@ -352,44 +533,77 @@ class PopupController {
       return;
     }
 
-    filtered.forEach((item) => {
-      // Built with DOM APIs rather than innerHTML: item names and passwords are
-      // attacker-influenced strings and used to be interpolated straight into
-      // markup (a password containing a quote broke the copy button outright).
-      const row = document.createElement("div");
-      row.className = "vault-item";
+    // Split into logins that belong to the current site and the rest, so the
+    // one for the page you're on is offered first and can be filled in one tap.
+    const host = this.currentHost || "";
+    const forThisSite = host ? filtered.filter((i) => PopupController.loginMatchesHost(i, host)) : [];
+    const others = filtered.filter((i) => !forThisSite.includes(i));
 
-      const info = document.createElement("div");
-      info.className = "item-info";
+    if (forThisSite.length) {
+      listEl.appendChild(this.groupHeading(`For ${host}`));
+      forThisSite.forEach((item) => listEl.appendChild(this.vaultRow(item, true)));
+    }
+    if (others.length) {
+      if (forThisSite.length) listEl.appendChild(this.groupHeading("Other logins"));
+      others.forEach((item) => listEl.appendChild(this.vaultRow(item, false)));
+    }
+  }
 
-      const name = document.createElement("span");
-      name.className = "item-name";
-      name.textContent = item.data.name || "Unnamed Login";
+  groupHeading(text) {
+    const h = document.createElement("div");
+    h.className = "list-heading";
+    h.textContent = text;
+    return h;
+  }
 
-      const user = document.createElement("span");
-      user.className = "item-username";
-      user.textContent = item.data.username || item.data.url || "";
+  /**
+   * One login row. When `matched` (belongs to the current site) the whole row
+   * is a one-tap fill target, with a hint telling the user so.
+   */
+  vaultRow(item, matched) {
+    // Built with DOM APIs rather than innerHTML: item names and passwords are
+    // attacker-influenced strings.
+    const row = document.createElement("div");
+    row.className = matched ? "vault-item matched" : "vault-item";
 
-      info.append(name, user);
+    const info = document.createElement("div");
+    info.className = "item-info";
 
-      const actions = document.createElement("div");
-      actions.className = "item-actions";
-      actions.append(
-        this.makeIconButton(
-          "Copy password",
-          "M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z",
-          (btn) => this.copyPassword(item, btn)
-        ),
-        this.makeIconButton(
-          "Autofill in current tab",
-          "M20.71 5.63l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-3.12 3.12-1.93-1.91-1.41 1.41 1.42 1.42L3 16.25V21h4.75l8.92-8.92 1.42 1.42 1.41-1.41-1.92-1.92 3.12-3.12c.4-.4.4-1.03.01-1.42zM6.92 19L5 17.08l8.06-8.06 1.92 1.92L6.92 19z",
-          () => this.triggerAutofill(item)
-        )
-      );
+    const name = document.createElement("span");
+    name.className = "item-name";
+    name.textContent = item.data.name || "Unnamed Login";
 
-      row.append(info, actions);
-      listEl.appendChild(row);
-    });
+    const user = document.createElement("span");
+    user.className = "item-username";
+    user.textContent = matched
+      ? (item.data.username || item.data.url || "") + "  ·  tap to fill"
+      : (item.data.username || item.data.url || "");
+
+    info.append(name, user);
+
+    if (matched) {
+      info.title = "Fill this login on the current page";
+      info.style.cursor = "pointer";
+      info.addEventListener("click", () => this.triggerAutofill(item));
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "item-actions";
+    actions.append(
+      this.makeIconButton(
+        "Copy password",
+        "M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z",
+        (btn) => this.copyPassword(item, btn)
+      ),
+      this.makeIconButton(
+        "Autofill in current tab",
+        "M20.71 5.63l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-3.12 3.12-1.93-1.91-1.41 1.41 1.42 1.42L3 16.25V21h4.75l8.92-8.92 1.42 1.42 1.41-1.41-1.92-1.92 3.12-3.12c.4-.4.4-1.03.01-1.42zM6.92 19L5 17.08l8.06-8.06 1.92 1.92L6.92 19z",
+        () => this.triggerAutofill(item)
+      )
+    );
+
+    row.append(info, actions);
+    return row;
   }
 
   makeIconButton(title, svgPath, onClick) {
@@ -429,17 +643,42 @@ class PopupController {
       const tab = tabs && tabs[0];
       if (!tab) return;
 
-      await ext.tabs.sendMessage(tab.id, {
+      const result = await ext.tabs.sendMessage(tab.id, {
         action: "FILL_CREDENTIALS",
         username: item.data.username || "",
         password: item.data.password || "",
       });
-      window.close();
+
+      // The content script reports how many fields it actually filled.
+      if (result && result.filled > 0) {
+        window.close();
+      } else {
+        // The form is probably not open yet (many sites hide login behind a
+        // button/modal). Tell the user instead of closing on a no-op.
+        this.showVaultNote("No login box found. Open the site's sign-in form, then try again.");
+      }
     } catch (err) {
-      // Usually means no content script on this page (about:, addons store, PDF viewer…).
+      // No content script on this page (about:, the add-ons store, a PDF, …),
+      // or the page hasn't finished loading.
       console.error("Autofill failed:", err);
-      this.showError("unlock-error", "Can't autofill on this page.");
+      this.showVaultNote("Can't autofill on this page.");
     }
+  }
+
+  /** A transient status line inside the vault view. */
+  showVaultNote(text) {
+    let note = document.getElementById("vault-note");
+    if (!note) {
+      note = document.createElement("div");
+      note.id = "vault-note";
+      note.className = "vault-note";
+      const list = document.getElementById("vault-list");
+      list.parentNode.insertBefore(note, list);
+    }
+    note.textContent = text;
+    note.classList.remove("hidden");
+    clearTimeout(this._vaultNoteTimer);
+    this._vaultNoteTimer = setTimeout(() => note.classList.add("hidden"), 4000);
   }
 
   // ---------- events ----------

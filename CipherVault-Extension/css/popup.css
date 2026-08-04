@@ -327,3 +327,80 @@ input:focus {
   background-color: var(--bg-card);
   border-top: 1px solid var(--border);
 }
+
+/* Current-site matching + fill feedback */
+.list-heading {
+  padding: 8px 16px 4px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.vault-item.matched {
+  background-color: rgba(59, 130, 246, 0.06);
+  border-left: 2px solid var(--primary);
+}
+.vault-item.matched .item-info:hover .item-name {
+  color: var(--primary);
+}
+.vault-note {
+  margin: 8px 16px;
+  padding: 8px 10px;
+  background-color: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-main);
+  line-height: 1.4;
+}
+.vault-note.hidden { display: none; }
+
+/* QR unlock on the master-password screen */
+.qr-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 16px 0 12px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.qr-divider::before, .qr-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.qr-unlock-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.qr-unlock-box canvas {
+  background: #f8fafc;
+  padding: 8px;
+  border-radius: 8px;
+}
+.qr-hint {
+  font-size: 11px !important;
+  color: var(--text-muted);
+  text-align: center;
+  line-height: 1.45;
+  margin: 0 !important;
+}
+.qr-hint strong { color: var(--text-main); }
+.qr-timer-track {
+  width: 150px;
+  height: 3px;
+  background: var(--bg-card);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.qr-timer-bar {
+  height: 100%;
+  width: 100%;
+  background: var(--primary);
+  border-radius: 999px;
+  transition: width 1s linear;
+}

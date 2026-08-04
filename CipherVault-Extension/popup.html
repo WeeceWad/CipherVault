@@ -64,6 +64,14 @@
       <button type="submit" class="btn-primary" id="btn-unlock-submit">Unlock</button>
     </form>
     <div id="unlock-error" class="error-msg hidden"></div>
+
+    <div class="qr-divider"><span>or scan with your phone</span></div>
+    <div class="qr-unlock-box">
+      <canvas id="qr-canvas" width="150" height="150"></canvas>
+      <p class="qr-hint" id="qr-hint">Open CipherVault on your phone → <strong>Tools → Unlock a PC</strong> and scan this.</p>
+      <div class="qr-timer-track"><div id="qr-timer-bar" class="qr-timer-bar"></div></div>
+    </div>
+
     <div class="view-footer-link">
       <button type="button" id="btn-unlock-signout" class="btn-link">Sign out of this account</button>
     </div>
@@ -94,7 +102,9 @@
   <script src="lib/firebase-firestore-compat.js"></script>
 
   <!-- App Scripts -->
+  <script src="lib/qrcode.js"></script>
   <script src="js/crypto.js"></script>
+  <script src="js/link.js"></script>
   <script src="js/popup.js"></script>
 </body>
 </html>

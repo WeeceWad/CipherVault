@@ -140,6 +140,18 @@ with `xpinstall.signatures.required` set to `false`.)
 
 In Chrome: `chrome://extensions` → Developer mode → **Load unpacked**.
 
+**Quicker on Firefox:** run `CipherVault-Extension/run-firefox.bat`. It opens
+Firefox (via Mozilla's `web-ext`) with the extension already loaded and a
+dedicated profile that remembers your sign-in. There's no way to inject a temp
+add-on into a normally-opened Firefox — Mozilla blocks that — so this launcher
+is the way to open Firefox for CipherVault until you get the add-on signed.
+
+**Autofill:** the popup detects the site you're on and shows matching logins
+under a "For <site>" heading — tap one to fill the current page. If a site hides
+its login behind a button/modal, open that form first, then fill. **QR unlock:**
+the master-password screen shows a QR code; scan it from the phone app
+(Tools → Unlock a PC) to unlock the extension without typing.
+
 The extension is a read-only window onto the vault. It signs in to the same
 account, downloads the encrypted blob and decrypts it locally. It deliberately
 **does not keep your master password between popup sessions** — closing the
