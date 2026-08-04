@@ -153,9 +153,14 @@ the master-password screen shows a QR code; scan it from the phone app
 (Tools → Unlock a PC) to unlock the extension without typing.
 
 The extension is a read-only window onto the vault. It signs in to the same
-account, downloads the encrypted blob and decrypts it locally. It deliberately
-**does not keep your master password between popup sessions** — closing the
-popup forgets the key, so you unlock each time you open it.
+account, downloads the encrypted blob and decrypts it locally. It stays
+unlocked for **15 minutes of inactivity**: the master password is held in
+`storage.session` — in-memory only, extension-only (content scripts can't read
+it), never written to disk, and wiped when the browser closes. Reopening the
+popup within the window restores the unlocked state and resets the timer; a
+background alarm re-locks it at the deadline. This matches the desktop and
+mobile apps' 15-minute idle auto-lock. Use the lock button to end the session
+immediately.
 
 ## 6. Running the tests
 

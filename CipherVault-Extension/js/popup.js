@@ -142,6 +142,62 @@ class VaultCache {
   }
 }
 
+/**
+ * Keeps the vault "unlocked" across popup opens for a limited idle window.
+ *
+ * A browser-action popup is destroyed the moment it closes, so the in-memory
+ * key vanishes and the vault effectively re-locks every time you look away.
+ * To get a real idle timer, the master password is stashed in
+ * storage.session - which is in-memory, extension-only (content scripts can't
+ * read it), never written to disk, and wiped when the browser closes - with a
+ * 15-minute deadline. Reopening within the window restores the unlocked state
+ * and pushes the deadline out; the background worker's alarm wipes the stash at
+ * the deadline even if the popup is never reopened.
+ *
+ * This mirrors what the desktop and mobile apps already do: hold the key in
+ * memory behind a 15-minute idle auto-lock.
+ */
+const SESSION_IDLE_MS = 15 * 60 * 1000;
+const AUTOLOCK_ALARM = "cv-autolock";
+const SESSION_KEY = "cvUnlock";
+
+class SessionLock {
+  static get available() {
+    return !!(ext && ext.storage && ext.storage.session);
+  }
+
+  /** Stashes the master password and (re)arms the idle deadline. */
+  static async save(uid, masterPassword) {
+    if (!this.available || !uid || !masterPassword) return;
+    const until = Date.now() + SESSION_IDLE_MS;
+    try {
+      await ext.storage.session.set({ [SESSION_KEY]: { uid, mp: masterPassword, until } });
+      if (ext.alarms) ext.alarms.create(AUTOLOCK_ALARM, { when: until });
+    } catch (e) { /* session storage unavailable; fall back to lock-on-close */ }
+  }
+
+  /** Returns { uid, mp, until } if still within the window, else null. */
+  static async load() {
+    if (!this.available) return null;
+    try {
+      const got = await ext.storage.session.get(SESSION_KEY);
+      const unlock = got && got[SESSION_KEY];
+      if (!unlock) return null;
+      if (Date.now() >= unlock.until) { await this.clear(); return null; }
+      return unlock;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  static async clear() {
+    // Cancel the alarm first (synchronous) so callers that don't await this
+    // still tear the timer down immediately.
+    try { if (ext && ext.alarms) ext.alarms.clear(AUTOLOCK_ALARM); } catch (e) {}
+    try { if (this.available) await ext.storage.session.remove(SESSION_KEY); } catch (e) {}
+  }
+}
+
 // --- EXTENSION POPUP CONTROLLER ---
 class PopupController {
   constructor() {
@@ -150,6 +206,7 @@ class PopupController {
     this.aesKey = null;
     this.decryptedVault = [];
     this.vaultRecord = null;   // { vault, salt, hash, kdf, isProvisioned }
+    this.masterPassword = "";  // held only while unlocked, for session restore
     this.syncError = null;
 
     FirebaseSyncEngine.init();
@@ -215,6 +272,7 @@ class PopupController {
         this.aesKey = null;
         this.decryptedVault = [];
         this.vaultRecord = null;
+        this.masterPassword = "";
       }
 
       this.firebaseUser = user;
@@ -228,6 +286,10 @@ class PopupController {
 
       this.setStatus("syncing", "Syncing");
       await this.refreshVault();
+      // Re-open within the idle window? Restore the unlocked state silently.
+      if (!this.aesKey && this.vaultRecord && this.vaultRecord.isProvisioned) {
+        await this.tryRestoreSession();
+      }
       this.render();
     });
   }
@@ -286,8 +348,10 @@ class PopupController {
       return;
     }
 
-    // Unlocked: no QR needed.
+    // Unlocked: no QR needed. Opening the popup is activity, so extend the
+    // idle window.
     this.stopQrUnlock();
+    if (this.masterPassword) SessionLock.save(this.uid, this.masterPassword);
 
     this.setView("view-vault");
     // Learn what site the user is on so matching logins can be surfaced.
@@ -452,8 +516,22 @@ class PopupController {
     if (!result.ok) throw new Error("Incorrect master password.");
 
     this.aesKey = result.aesKey;
+    this.masterPassword = password;
     await this.decryptVault();
+    await SessionLock.save(this.uid, password);
     this.setStatus("online", "Unlocked");
+  }
+
+  /** Restores an unlocked vault from storage.session, if still within the window. */
+  async tryRestoreSession() {
+    const unlock = await SessionLock.load();
+    if (!unlock || unlock.uid !== this.uid || !unlock.mp) return;
+    try {
+      // unlockVault re-derives the key, decrypts, and pushes the deadline out.
+      await this.unlockVault(unlock.mp);
+    } catch (e) {
+      await SessionLock.clear();
+    }
   }
 
   async decryptVault() {
@@ -476,6 +554,8 @@ class PopupController {
   lock() {
     this.aesKey = null;
     this.decryptedVault = [];
+    this.masterPassword = "";
+    SessionLock.clear();
     this.setStatus("locked", "Locked");
     this.hideError("unlock-error");
     const input = document.getElementById("master-password");
@@ -488,6 +568,8 @@ class PopupController {
     this.aesKey = null;
     this.decryptedVault = [];
     this.vaultRecord = null;
+    this.masterPassword = "";
+    await SessionLock.clear();
     // Drop only this account's cached blob, never the whole store.
     VaultCache.clear(uid);
     await FirebaseSyncEngine.logout();

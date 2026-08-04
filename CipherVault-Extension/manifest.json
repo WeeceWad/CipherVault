@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "CipherVault",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "description": "Zero-knowledge password manager and autofill extension.",
   "browser_specific_settings": {
     "gecko": {
@@ -24,8 +24,15 @@
   "permissions": [
     "activeTab",
     "storage",
-    "scripting"
+    "scripting",
+    "alarms"
   ],
+  "background": {
+    "service_worker": "js/background.js",
+    "scripts": [
+      "js/background.js"
+    ]
+  },
   "host_permissions": [
     "https://identitytoolkit.googleapis.com/*",
     "https://securetoken.googleapis.com/*",
