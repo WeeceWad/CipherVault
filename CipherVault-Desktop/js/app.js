@@ -3425,9 +3425,17 @@
 
       await this.saveEncryptedVault();
       this.closeModal("modal-item-editor");
+      const savedId = this.editingItemId;
       this.editingItemId = null;
       this.updateCategoryCounts();
       this.renderList();
+      // If the detail pane is open on the item we just edited, rebuild it —
+      // its fields were rendered from the old values and won't refresh on
+      // their own, which looked like the edit "didn't take" until a reload.
+      if (savedId && this.currentViewId === "detail-view-container") {
+        const saved = this.decryptedVault.find((i) => i.id === savedId);
+        if (saved && !saved.isTrashed) this.renderDetailView(saved);
+      }
       this.showToast(`Saved "${dataObj.name}" securely`);
     }
 
