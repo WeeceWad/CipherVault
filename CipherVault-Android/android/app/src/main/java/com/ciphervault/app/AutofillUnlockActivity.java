@@ -46,6 +46,15 @@ public class AutofillUnlockActivity extends FragmentActivity {
     static final String EXTRA_WEB_DOMAIN = "cv.webDomain";
     static final String EXTRA_PACKAGE = "cv.package";
 
+    /**
+     * Upper bound on datasets in one response. This guards the Binder
+     * transaction size, not usability - the Android autofill dropdown scrolls,
+     * so a normal vault should be offered in full. Relevance ranking puts
+     * domain matches first, so this only ever trims the least-relevant tail of
+     * a very large vault. (The old limit of 12 hid most of a 37-login vault.)
+     */
+    private static final int MAX_DATASETS = 50;
+
     private AutofillId usernameId;
     private AutofillId passwordId;
     private String webDomain;
@@ -131,8 +140,7 @@ public class AutofillUnlockActivity extends FragmentActivity {
                 response.addDataset(dataset);
                 added++;
             }
-            // The autofill bar is a small surface; more than this is unusable.
-            if (added >= 12) break;
+            if (added >= MAX_DATASETS) break;
         }
 
         if (added == 0) {
