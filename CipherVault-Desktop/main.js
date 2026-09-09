@@ -209,6 +209,7 @@ function createWindow() {
     autoHideMenuBar: true,
     backgroundColor: '#0f172a',
     title: 'CipherVault',
+    icon: path.join(__dirname, 'icons', 'icon.ico'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,

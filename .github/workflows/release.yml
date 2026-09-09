@@ -207,8 +207,23 @@ jobs:
             CipherVault-Desktop/dist/latest.yml
           retention-days: 1
 
+  extensions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Package Firefox and Chromium extensions
+        run: node scripts/package-extensions.cjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: browser-extensions
+          path: dist/CipherVault-*.zip
+          retention-days: 1
+
   release:
-    needs: [android, desktop]
+    needs: [android, desktop, extensions]
     runs-on: ubuntu-latest
 
     steps:
@@ -234,6 +249,7 @@ jobs:
           cp artifacts/desktop-installer/CipherVault-Setup.exe release/
           cp artifacts/desktop-installer/CipherVault-Setup.exe.blockmap release/ 2>/dev/null || true
           cp artifacts/desktop-installer/latest.yml release/
+          cp artifacts/browser-extensions/*.zip release/
           ls -la release/
 
       - name: Publish the release
@@ -249,6 +265,8 @@ jobs:
             release/CipherVault-Setup.exe
             release/CipherVault-Setup.exe.blockmap
             release/latest.yml
+            release/CipherVault-Chromium.zip
+            release/CipherVault-Firefox.zip
           body: |
             ## CipherVault v${{ steps.version.outputs.name }}
 
@@ -257,12 +275,20 @@ jobs:
             | **Windows** | [`CipherVault-Setup.exe`](https://github.com/WeeceWad/CipherVault/releases/latest/download/CipherVault-Setup.exe) |
             | **Android** | [`CipherVault.apk`](https://github.com/WeeceWad/CipherVault/releases/latest/download/CipherVault.apk) |
             | **Web** | https://weecewad.github.io/CipherVault/ |
+            | **Chrome / Edge / Brave** | `CipherVault-Chromium.zip` below |
+            | **Firefox (unsigned)** | `CipherVault-Firefox.zip` below |
+
+            New matching shield-and-keyhole logo across all platforms.
+
+            Chromium: extract the ZIP into a permanent folder, open your browser's
+            extensions page, enable Developer mode, then choose Load unpacked.
+            Firefox: this ZIP is unsigned; submit it to Mozilla for unlisted signing
+            for permanent installation, or load its extracted manifest temporarily.
 
             Both apps update themselves — **Settings → Check for Updates**.
 
-            Installing over an existing copy keeps your vault. If Android refuses
-            the install, the APK was signed with a different key: uninstall first,
-            then sign in again to restore from the cloud.
+            Install over your existing copy to keep your vault. If Android refuses
+            the update, keep the existing app installed and investigate the error.
 
             `latest.yml` is the desktop update manifest. Ignore it unless you're
             curious; the app reads it for you.

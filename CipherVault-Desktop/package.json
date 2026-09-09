@@ -27,10 +27,12 @@
       "css/**/*",
       "js/**/*",
       "lib/**/*",
+      "icons/**/*",
       "!test/**/*",
       "!dist/**/*"
     ],
     "win": {
+      "icon": "icons/icon.ico",
       "target": [
         "nsis"
       ]

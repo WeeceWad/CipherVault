@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "CipherVault",
-  "version": "1.8.0",
-  "description": "Zero-knowledge password manager and autofill extension.",
+  "version": "1.9.0",
+  "description": "CipherVault password manager and autofill extension.",
   "browser_specific_settings": {
     "gecko": {
       "id": "ciphervault@chocc.local",
