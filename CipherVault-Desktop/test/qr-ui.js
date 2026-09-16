@@ -1,5 +1,7 @@
-require('../main.js');
 const { app, BrowserWindow } = require('electron');
+app.setPath('userData', require('path').join(__dirname, '../../tmp/qr-ui-profile'));
+app.disableHardwareAcceleration();
+require('../main.js');
 
 app.whenReady().then(async () => {
   await new Promise((r) => setTimeout(r, 4000));
@@ -28,17 +30,19 @@ app.whenReady().then(async () => {
     ok('unlock pane shown', vis('unlock-form'));
     ok('QR button hidden when signed out', !vis('btn-qr-unlock'));
 
-    // Signed in: offered.
-    a.firebaseUser={uid:'qruid', email:'q@x.com'}; a.currentUid='qruid';
-    a.checkVaultSetup(); await wait(80);
-    ok('QR button offered when signed in', vis('btn-qr-unlock'));
-
     // Open it with the Firestore listener stubbed.
     let watched=null, deleted=[];
     const FSE = window.CipherVault.FirebaseSyncEngine;
     const realWatch = FSE.watchLinkSession, realDel = FSE.deleteLinkSession;
     FSE.watchLinkSession = (uid, sid, onResp) => { watched={uid,sid,onResp}; return ()=>{}; };
     FSE.deleteLinkSession = async (uid,sid) => { deleted.push(sid); };
+
+    // Signed in: starts automatically, with the password form still visible.
+    a.firebaseUser={uid:'qruid', email:'q@x.com'}; a.currentUid='qruid';
+    a.checkVaultSetup(); await wait(400);
+    ok('QR automatically offered when signed in', vis('modal-qr-unlock') && !!a.qrSession);
+    ok('QR lives inside lock screen', $('modal-qr-unlock').parentElement === $('master-lock-screen'));
+    ok('password form remains visible', vis('unlock-form'));
 
     await a.openQrUnlock(); await wait(400);
     ok('QR modal opened', vis('modal-qr-unlock'));
@@ -81,6 +85,15 @@ app.whenReady().then(async () => {
     ok('refusal is explained on screen', !vis('qr-error')===false && $('qr-error').textContent.length>0, $('qr-error').textContent);
 
     a.stopQrSession();
+    const realCreate = LSE.createSession;
+    let completeCreate;
+    LSE.createSession = () => new Promise(resolve => { completeCreate = resolve; });
+    const pending = a.openQrUnlock();
+    a.stopQrSession();
+    completeCreate(live2);
+    await pending;
+    ok('cancelled generation cannot restart listener', a.qrSession === null);
+    LSE.createSession = realCreate;
     FSE.watchLinkSession=realWatch; FSE.deleteLinkSession=realDel;
     localStorage.clear();
     return out;

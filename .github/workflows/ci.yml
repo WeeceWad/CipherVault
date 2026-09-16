@@ -95,6 +95,9 @@ jobs:
         working-directory: CipherVault-Android
         run: node scripts/check-parity.js
 
+      - name: Cached mobile vault unlock does not wait for network
+        run: node scripts/test-unlock-startup.cjs
+
   android-build:
     runs-on: ubuntu-latest
     needs: verify

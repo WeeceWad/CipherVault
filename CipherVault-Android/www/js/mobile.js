@@ -109,8 +109,10 @@
       this.setupNativeHooks();
       this.startTotpTicker();
 
-      await this.refreshVersionLabels();
-      await this.refreshBiometricState();
+      // Native availability and version lookup are independent; neither should
+      // delay displaying the locally cached vault's unlock screen.
+      this.refreshVersionLabels().catch(console.error);
+      this.refreshBiometricState().catch(console.error);
       this.checkVaultState();
 
       // Background update check, throttled to once every few hours.
@@ -583,6 +585,7 @@
 
     async unlockWithBiometrics() {
       if (!this.biometrics) return;
+      const uid = this.currentUid;
 
       const btn = $('btn-biometric-unlock');
       btn.disabled = true;
@@ -590,6 +593,7 @@
 
       try {
         const { secret } = await this.biometrics.unlock();
+        if (uid !== this.currentUid) return;
         $('master-pass').value = secret;
         await this.doUnlock();
       } catch (err) {
@@ -986,7 +990,11 @@
         }
 
         this.updateSyncIndicator(!!user);
+        if (StorageController.getSalt() && StorageController.getMasterHash()) {
+          this.checkVaultState();
+        }
         if (user) await this.syncFromCloud();
+        if (this.currentUid !== newUid) return;
         this.updateSyncIndicator(false);
         this.checkVaultState();
         this.refreshSettings();
@@ -1018,6 +1026,7 @@
         return;
       }
 
+      if (this.currentUid !== uid) return;
       if (cloud && cloud.isProvisioned) {
         const changed =
           StorageController.getSalt() !== cloud.salt ||
@@ -1311,6 +1320,7 @@
     }
 
     async doUnlock() {
+      const uid = this.currentUid;
       const input = $('master-pass');
       const password = input.value;
       this.hideMsg('unlock-error');
@@ -1325,6 +1335,10 @@
 
       try {
         const result = await CryptoEngine.unlock(password, salt, hash, StorageController.getKdf());
+        if (uid !== this.currentUid || salt !== StorageController.getSalt() || hash !== StorageController.getMasterHash()) {
+          this.showMsg('unlock-error', 'Your vault was updated. Please unlock again.');
+          return;
+        }
         if (!result.ok) {
           this.showMsg('unlock-error', 'Incorrect master password.');
           return;
@@ -1334,6 +1348,7 @@
         this.masterPassword = password;
         input.value = '';
         const failed = await this.loadAndDecrypt();
+        if (uid !== this.currentUid || this.aesKey !== result.aesKey) return;
         this.enterApp();
         this.toast(failed > 0 ? `Unlocked. ${failed} item(s) failed to decrypt.` : 'Vault unlocked.');
 

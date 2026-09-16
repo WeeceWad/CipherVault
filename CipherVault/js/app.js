@@ -1074,6 +1074,8 @@
         const newUid = user ? user.uid : null;
         const changed = newUid !== this.currentUid;
 
+        if (changed) this.stopQrSession();
+
         this.firebaseUser = user;
         this.currentUid = newUid;
         this.authResolved = true;
@@ -1316,6 +1318,15 @@
       if (unlockForm) unlockForm.classList.add("hidden");
       if (welcomeForm) welcomeForm.classList.add("hidden");
       document.getElementById("btn-qr-unlock")?.classList.add("hidden");
+      const qrPanel = document.getElementById("modal-qr-unlock");
+      const screen = document.getElementById("master-lock-screen");
+      if (qrPanel && screen && qrPanel.parentElement !== screen) screen.appendChild(qrPanel);
+      const showQr = !!(salt && hash && this.currentUid && !this.aesKey && screen && !screen.classList.contains("hidden"));
+      if (showQr) {
+        if (!this.qrSession && !this.qrStarting) this.openQrUnlock();
+      } else {
+        this.stopQrSession();
+      }
 
       const account = this.firebaseUser ? this.firebaseUser.email : null;
 
@@ -1336,7 +1347,7 @@
         }
 
         // Both devices have to be on the same account for the handshake.
-        document.getElementById("btn-qr-unlock")?.classList.toggle("hidden", !this.currentUid);
+        // Phone unlock is visible alongside the password form.
       } else if (this.firebaseUser || StorageController.getLocalChoice()) {
         if (setupForm) setupForm.classList.remove("hidden");
         if (lockTitle) lockTitle.textContent = "Create Master Password";
@@ -1866,6 +1877,7 @@
 
         this.aesKey = result.aesKey;
         passInput.value = "";
+        this.stopQrSession();
         const failed = await this.loadAndDecryptVault();
         document.getElementById("master-lock-screen").classList.add("hidden");
         this.showToast(
@@ -2017,6 +2029,7 @@
     // ---------------------------------------------------------------------
 
     async openQrUnlock() {
+      if (this.qrStarting || this.qrSession || this.aesKey) return;
       if (!this.currentUid) {
         this.showToast("Sign in first — QR unlock needs both devices on the same account.");
         return;
@@ -2034,16 +2047,23 @@
 
     async rotateQrSession() {
       this.stopQrSession({ keepModal: true });
+      const generation = this.qrGeneration;
+      const uid = this.currentUid;
+      this.qrStarting = true;
 
       let session;
       try {
         session = await LinkSessionEngine.createSession();
       } catch (err) {
+        if (generation !== this.qrGeneration) return;
+        this.qrStarting = false;
         console.error("Could not start a link session:", err);
         this.showQrError("Could not start a session: " + err.message);
         return;
       }
 
+      if (generation !== this.qrGeneration || uid !== this.currentUid || this.aesKey) return;
+      this.qrStarting = false;
       this.qrSession = session;
       this.renderQrCode(session.qrPayload);
 
@@ -2115,6 +2135,7 @@
 
     async handleQrResponse(response) {
       const session = this.qrSession;
+      const uid = this.currentUid;
       if (!session || this.qrConsuming) return;
       this.qrConsuming = true;
 
@@ -2138,6 +2159,7 @@
           StorageController.getMasterHash(),
           StorageController.getKdf()
         );
+        if (this.qrSession !== session || this.currentUid !== uid || this.aesKey) return;
         if (!result.ok) throw new Error("Your phone sent a master password this vault doesn't accept.");
 
         this.aesKey = result.aesKey;
@@ -2160,7 +2182,7 @@
         this.qrConsuming = false;
       } finally {
         // The session is single-use whatever happened.
-        FirebaseSyncEngine.deleteLinkSession(this.currentUid, sessionId);
+        FirebaseSyncEngine.deleteLinkSession(uid, sessionId);
       }
     }
 
@@ -2175,6 +2197,8 @@
     }
 
     stopQrSession({ keepModal = false } = {}) {
+      this.qrGeneration = (this.qrGeneration || 0) + 1;
+      this.qrStarting = false;
       if (this.qrTicker) clearInterval(this.qrTicker);
       this.qrTicker = null;
 
