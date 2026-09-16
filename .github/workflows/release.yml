@@ -278,8 +278,8 @@ jobs:
             | **Chrome / Edge / Brave** | `CipherVault-Chromium.zip` below |
             | **Firefox (unsigned)** | `CipherVault-Firefox.zip` below |
 
-            Faster fingerprint unlock startup on Android, and a rotating phone-unlock
-            QR code directly on the desktop and web unlock screens.
+            Android automatically offers fingerprint unlock for a signed-in account
+            with biometrics enabled. Dismiss the prompt to use your master password.
 
             Chromium: extract the ZIP into a permanent folder, open your browser's
             extensions page, enable Developer mode, then choose Load unpacked.

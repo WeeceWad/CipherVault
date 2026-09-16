@@ -529,6 +529,18 @@
 
       // Only offer the shortcut on the lock screen once it is actually set up.
       unlockBtn.classList.toggle('hidden', !(status.available && status.enrolled));
+      this.maybeAutoUnlockWithBiometrics();
+    }
+
+    maybeAutoUnlockWithBiometrics() {
+      const status = this.biometricStatus || {};
+      if (!this.currentUid || !this.firebaseUser || this.aesKey || this.biometricUnlocking ||
+          this.autoBiometricUid === this.currentUid || !status.available || !status.enrolled ||
+          !StorageController.getSalt() || !StorageController.getMasterHash()) return;
+      // Offer once per restored account. Cancellation leaves password entry
+      // available; cloud sync and settings refresh must not reopen the prompt.
+      this.autoBiometricUid = this.currentUid;
+      this.unlockWithBiometrics();
     }
 
     async enableBiometrics(masterPassword) {
@@ -584,7 +596,9 @@
     }
 
     async unlockWithBiometrics() {
-      if (!this.biometrics) return;
+      if (!this.biometrics || this.biometricUnlocking) return;
+      this.biometricUnlocking = true;
+      this.autoBiometricUid = this.currentUid;
       const uid = this.currentUid;
 
       const btn = $('btn-biometric-unlock');
@@ -616,6 +630,7 @@
           this.showMsg('unlock-error', code || 'Biometric unlock failed.');
         }
       } finally {
+        this.biometricUnlocking = false;
         btn.disabled = false;
         $('master-pass').value = '';
       }
@@ -980,6 +995,7 @@
         this.currentUid = newUid;
 
         if (changed) {
+          this.autoBiometricUid = null;
           this.aesKey = null;
           this.decryptedVault = [];
           this.simpleLoginKey = '';
@@ -1143,6 +1159,7 @@
         $('lock-subtitle').textContent = account
           ? `Enter the master password for ${account}.`
           : "Enter your master password.";
+        this.maybeAutoUnlockWithBiometrics();
       } else if (this.firebaseUser || StorageController.getLocalChoice()) {
         this.showLockPane('setup-pane');
         $('lock-title').textContent = 'Create Master Password';

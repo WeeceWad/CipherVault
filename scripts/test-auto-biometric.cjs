@@ -1,0 +1,25 @@
+const fs = require('node:fs');
+const assert = require('node:assert/strict');
+const source = fs.readFileSync('CipherVault-Android/www/js/mobile.js', 'utf8');
+const start = source.indexOf('    maybeAutoUnlockWithBiometrics() {');
+const end = source.indexOf('\n    }', start) + 6;
+let cached = true;
+const method = new Function('StorageController', `return ({${source.slice(start, end)}}).maybeAutoUnlockWithBiometrics`)(
+  {getSalt:()=>cached && 'salt', getMasterHash:()=>cached && 'hash'});
+let prompts = 0;
+const app = {currentUid:'a', firebaseUser:{uid:'a'}, biometricStatus:{available:true,enrolled:true}, unlockWithBiometrics(){prompts++;}};
+method.call(app);
+assert.equal(prompts, 1);
+method.call(app);
+assert.equal(prompts, 1, 'cancelled prompt must not reopen on sync or settings refresh');
+app.currentUid = 'b'; app.biometricStatus.enrolled = false;
+method.call(app); assert.equal(prompts, 1);
+app.biometricStatus.enrolled = true; cached = false;
+method.call(app); assert.equal(prompts, 1);
+cached = true; app.biometricUnlocking = true;
+method.call(app); assert.equal(prompts, 1);
+app.biometricUnlocking = false;
+method.call(app); assert.equal(prompts, 2);
+app.currentUid = null;
+method.call(app); assert.equal(prompts, 2);
+console.log('PASS automatic biometric prompt, cancellation, disabled biometrics, missing vault, duplicate prompt and signed-out guards');

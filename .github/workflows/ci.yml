@@ -96,7 +96,9 @@ jobs:
         run: node scripts/check-parity.js
 
       - name: Cached mobile vault unlock does not wait for network
-        run: node scripts/test-unlock-startup.cjs
+        run: |
+          node scripts/test-unlock-startup.cjs
+          node scripts/test-auto-biometric.cjs
 
   android-build:
     runs-on: ubuntu-latest
