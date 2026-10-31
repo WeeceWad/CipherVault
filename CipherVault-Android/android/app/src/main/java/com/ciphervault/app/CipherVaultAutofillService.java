@@ -6,7 +6,6 @@ import android.app.slice.Slice;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentSender;
-import android.graphics.drawable.Icon;
 import android.os.Build;
 import android.os.CancellationSignal;
 import android.service.autofill.AutofillService;
@@ -135,21 +134,36 @@ public class CipherVaultAutofillService extends AutofillService {
         AutofillId[] idArray = ids.toArray(new AutofillId[0]);
         FillResponse.Builder response = new FillResponse.Builder();
 
-        // Prefer an inline suggestion: it sits in the keyboard's suggestion
-        // strip (Gboard and friends on Android 11+) instead of a dropdown that
-        // covers the field and re-appears on every keystroke - which made it
-        // impossible to just type a password by hand. The dropdown RemoteViews
-        // stays as the fallback for keyboards or OS versions without inline.
+        // The RemoteViews dropdown is the guaranteed path: it shows on every
+        // Android version and keyboard and reliably fills passwords. On
+        // Android 13+ we additionally attach an inline chip so supporting
+        // keyboards (Gboard and friends) can show it in the suggestion strip
+        // instead of a dropdown that covers the field and re-appears on every
+        // keystroke - which made it impossible to just type a password by hand.
+        //
+        // Crucially, if anything about the inline path fails we fall straight
+        // back to the plain dropdown rather than showing nothing: offering
+        // inline makes Android suppress the auto dropdown, so a blank/failed
+        // chip would otherwise leave the user with no prompt at all (the
+        // v1.9.3 regression).
         InlinePresentation inline = null;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             inline = buildInlinePresentation(request, label);
         }
 
+        Presentations presentations = null;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && inline != null) {
-            Presentations presentations = new Presentations.Builder()
-                .setMenuPresentation(presentation)
-                .setInlinePresentation(inline)
-                .build();
+            try {
+                presentations = new Presentations.Builder()
+                    .setMenuPresentation(presentation)
+                    .setInlinePresentation(inline)
+                    .build();
+            } catch (Throwable t) {
+                presentations = null;
+            }
+        }
+
+        if (presentations != null) {
             response.setAuthentication(idArray, sender, presentations);
         } else {
             response.setAuthentication(idArray, sender, presentation);
@@ -193,9 +207,13 @@ public class CipherVaultAutofillService extends AutofillService {
                 this, 0, new Intent(this, MainActivity.class),
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
 
+            // Title-only, no start icon. The launcher icon is an adaptive
+            // vector whose artwork sits in a small safe zone surrounded by
+            // transparent padding; rendered cross-process inside the keyboard's
+            // inline chip it came out blank, which is what broke the chip in
+            // v1.9.3. A plain text chip renders reliably on every keyboard.
             Slice slice = InlineSuggestionUi.newContentBuilder(attribution)
                 .setTitle(title)
-                .setStartIcon(Icon.createWithResource(this, R.drawable.ic_launcher_foreground))
                 .setContentDescription("CipherVault autofill")
                 .build()
                 .getSlice();
