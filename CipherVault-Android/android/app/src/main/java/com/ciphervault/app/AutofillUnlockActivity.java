@@ -182,7 +182,7 @@ public class AutofillUnlockActivity extends FragmentActivity {
      * which usually contains the company's domain reversed.
      */
     private List<AutofillStore.Credential> rankByRelevance(List<AutofillStore.Credential> all) {
-        String target = webDomain != null ? webDomain.toLowerCase(Locale.ROOT) : null;
+        String target = normalizeHost(webDomain);
         String pkg = callerPackage != null ? callerPackage.toLowerCase(Locale.ROOT) : null;
 
         List<AutofillStore.Credential> strong = new ArrayList<>();
@@ -193,7 +193,7 @@ public class AutofillUnlockActivity extends FragmentActivity {
             boolean matches = false;
 
             if (host != null) {
-                if (target != null && (target.endsWith(host) || host.endsWith(target))) {
+                if (target != null && hostsMatch(host, target)) {
                     matches = true;
                 } else if (pkg != null) {
                     // "com.example.app" contains "example" from example.com
@@ -217,12 +217,29 @@ public class AutofillUnlockActivity extends FragmentActivity {
         try {
             String withScheme = url.contains("://") ? url : "https://" + url;
             String host = new URI(withScheme).getHost();
-            if (host == null) return null;
-            host = host.toLowerCase(Locale.ROOT);
-            return host.startsWith("www.") ? host.substring(4) : host;
+            return normalizeHost(host);
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /** Lowercase and drop a leading "www.", so hosts compare cleanly. */
+    private String normalizeHost(String host) {
+        if (host == null || host.isEmpty()) return null;
+        host = host.toLowerCase(Locale.ROOT).trim();
+        if (host.isEmpty()) return null;
+        return host.startsWith("www.") ? host.substring(4) : host;
+    }
+
+    /**
+     * Same registrable-domain test the browser extension uses: tolerant of
+     * subdomains both ways (account.bet365.com matches bet365.com and vice
+     * versa) but, thanks to the dot boundary, never matches unrelated hosts
+     * like notbet365.com.
+     */
+    private boolean hostsMatch(String a, String b) {
+        if (a == null || b == null) return false;
+        return a.equals(b) || a.endsWith("." + b) || b.endsWith("." + a);
     }
 
     private void finishCancelled() {

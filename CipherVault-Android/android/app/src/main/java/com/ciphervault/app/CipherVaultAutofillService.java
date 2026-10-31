@@ -2,25 +2,33 @@ package com.ciphervault.app;
 
 import android.app.PendingIntent;
 import android.app.assist.AssistStructure;
+import android.app.slice.Slice;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentSender;
+import android.graphics.drawable.Icon;
 import android.os.Build;
 import android.os.CancellationSignal;
 import android.service.autofill.AutofillService;
 import android.service.autofill.FillCallback;
 import android.service.autofill.FillRequest;
 import android.service.autofill.FillResponse;
+import android.service.autofill.InlinePresentation;
+import android.service.autofill.Presentations;
 import android.service.autofill.SaveCallback;
 import android.service.autofill.SaveInfo;
 import android.service.autofill.SaveRequest;
 import android.text.TextUtils;
 import android.view.View;
 import android.view.autofill.AutofillId;
+import android.view.inputmethod.InlineSuggestionsRequest;
 import android.widget.RemoteViews;
+import android.widget.inline.InlinePresentationSpec;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.RequiresApi;
+import androidx.autofill.inline.UiVersions;
+import androidx.autofill.inline.v1.InlineSuggestionUi;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -124,8 +132,28 @@ public class CipherVaultAutofillService extends AutofillService {
         IntentSender sender = pending.getIntentSender();
 
         List<AutofillId> ids = form.ids();
-        FillResponse.Builder response = new FillResponse.Builder()
-            .setAuthentication(ids.toArray(new AutofillId[0]), sender, presentation);
+        AutofillId[] idArray = ids.toArray(new AutofillId[0]);
+        FillResponse.Builder response = new FillResponse.Builder();
+
+        // Prefer an inline suggestion: it sits in the keyboard's suggestion
+        // strip (Gboard and friends on Android 11+) instead of a dropdown that
+        // covers the field and re-appears on every keystroke - which made it
+        // impossible to just type a password by hand. The dropdown RemoteViews
+        // stays as the fallback for keyboards or OS versions without inline.
+        InlinePresentation inline = null;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            inline = buildInlinePresentation(request, label);
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && inline != null) {
+            Presentations presentations = new Presentations.Builder()
+                .setMenuPresentation(presentation)
+                .setInlinePresentation(inline)
+                .build();
+            response.setAuthentication(idArray, sender, presentations);
+        } else {
+            response.setAuthentication(idArray, sender, presentation);
+        }
 
         // Offer to save new credentials typed by hand.
         if (form.usernameId != null && form.passwordId != null) {
@@ -139,6 +167,44 @@ public class CipherVaultAutofillService extends AutofillService {
         }
 
         callback.onSuccess(response.build());
+    }
+
+    /**
+     * Builds the inline chip shown in the keyboard suggestion strip. Returns
+     * null when the keyboard did not ask for inline suggestions or does not
+     * support the v1 UI, in which case the caller falls back to the dropdown.
+     */
+    @RequiresApi(api = Build.VERSION_CODES.R)
+    private InlinePresentation buildInlinePresentation(FillRequest request, String title) {
+        InlineSuggestionsRequest inlineReq = request.getInlineSuggestionsRequest();
+        if (inlineReq == null) return null;
+
+        List<InlinePresentationSpec> specs = inlineReq.getInlinePresentationSpecs();
+        if (specs == null || specs.isEmpty()) return null;
+
+        InlinePresentationSpec spec = specs.get(0);
+        try {
+            if (!UiVersions.getVersions(spec.getStyle()).contains(UiVersions.INLINE_UI_VERSION_1)) {
+                return null;
+            }
+
+            // Long-pressing the chip opens the app; required to be non-null.
+            PendingIntent attribution = PendingIntent.getActivity(
+                this, 0, new Intent(this, MainActivity.class),
+                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+
+            Slice slice = InlineSuggestionUi.newContentBuilder(attribution)
+                .setTitle(title)
+                .setStartIcon(Icon.createWithResource(this, R.drawable.ic_launcher_foreground))
+                .setContentDescription("CipherVault autofill")
+                .build()
+                .getSlice();
+
+            return new InlinePresentation(slice, spec, false);
+        } catch (Exception e) {
+            // Any incompatibility just means no inline chip; the dropdown shows.
+            return null;
+        }
     }
 
     @Override

@@ -86,6 +86,9 @@ dependencies {
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     // BiometricPrompt, for the vault's biometric unlock.
     implementation "androidx.biometric:biometric:1.1.0"
+    // InlineSuggestionUi, so the autofill prompt can render in the keyboard
+    // suggestion strip instead of a dropdown that covers the field.
+    implementation "androidx.autofill:autofill:1.1.0"
     implementation project(':capacitor-android')
     testImplementation "junit:junit:$junitVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
